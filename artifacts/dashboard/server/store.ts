@@ -1,8 +1,7 @@
 import { randomUUID } from 'crypto';
-import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { DirectSecp256k1HdWallet, DirectSecp256k1Wallet } from '@cosmjs/proto-signing';
+import { pool } from './db';
 
-const WALLET_FILE = '.wallets.json';
 const ADDRESS_PREFIX = 'me';
 
 export interface StoredWallet {
@@ -16,35 +15,61 @@ export interface StoredWallet {
   type: 'mnemonic' | 'privatekey';
 }
 
-let wallets: Map<string, StoredWallet> = new Map();
-
-function loadFromFile() {
-  try {
-    if (existsSync(WALLET_FILE)) {
-      const data = JSON.parse(readFileSync(WALLET_FILE, 'utf8')) as StoredWallet[];
-      for (const w of data) wallets.set(w.id, w);
-      console.log(`[store] Loaded ${wallets.size} wallet(s) from ${WALLET_FILE}`);
-    }
-  } catch (e) {
-    console.error('[store] Failed to load wallet file:', e);
-  }
+function rowToWallet(row: any): StoredWallet {
+  return {
+    id: row.id,
+    label: row.label,
+    address: row.address,
+    mnemonic: row.mnemonic ?? undefined,
+    privateKey: row.private_key ?? undefined,
+    verified: row.verified,
+    createdAt: row.created_at,
+    type: row.type as 'mnemonic' | 'privatekey',
+  };
 }
 
-function saveToFile() {
-  try {
-    writeFileSync(WALLET_FILE, JSON.stringify([...wallets.values()], null, 2));
-  } catch { /* ignore */ }
+export async function getWallets(): Promise<StoredWallet[]> {
+  const { rows } = await pool.query('SELECT * FROM wallets ORDER BY created_at ASC');
+  return rows.map(rowToWallet);
 }
 
-loadFromFile();
+export async function getWallet(id: string): Promise<StoredWallet | undefined> {
+  const { rows } = await pool.query('SELECT * FROM wallets WHERE id = $1', [id]);
+  return rows[0] ? rowToWallet(rows[0]) : undefined;
+}
 
-// Also load MNEMONIC env var if set and not already imported
-async function loadEnvWallet() {
+export async function insertWallet(w: StoredWallet): Promise<void> {
+  await pool.query(
+    `INSERT INTO wallets (id, label, address, mnemonic, private_key, verified, created_at, type)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     ON CONFLICT (address) DO NOTHING`,
+    [w.id, w.label, w.address, w.mnemonic ?? null, w.privateKey ?? null, w.verified, w.createdAt, w.type]
+  );
+}
+
+export async function removeWallet(id: string): Promise<boolean> {
+  const { rowCount } = await pool.query('DELETE FROM wallets WHERE id = $1', [id]);
+  return (rowCount ?? 0) > 0;
+}
+
+export async function updateWalletLabel(id: string, label: string): Promise<void> {
+  await pool.query('UPDATE wallets SET label = $1 WHERE id = $2', [label, id]);
+}
+
+export async function markVerified(id: string): Promise<void> {
+  await pool.query('UPDATE wallets SET verified = TRUE WHERE id = $1', [id]);
+}
+
+export async function getWalletCount(): Promise<number> {
+  const { rows } = await pool.query('SELECT COUNT(*) AS cnt FROM wallets');
+  return parseInt(rows[0].cnt, 10);
+}
+
+// Load MNEMONIC env var on startup if set
+export async function loadEnvWallet() {
   const mnemonic = process.env.MNEMONIC;
   if (!mnemonic) return;
   const clean = mnemonic.trim();
-  const exists = [...wallets.values()].some(w => w.mnemonic === clean);
-  if (exists) return;
   try {
     const hdWallet = await DirectSecp256k1HdWallet.fromMnemonic(clean, { prefix: ADDRESS_PREFIX });
     const [account] = await hdWallet.getAccounts();
@@ -57,36 +82,9 @@ async function loadEnvWallet() {
       createdAt: new Date().toISOString(),
       type: 'mnemonic',
     };
-    wallets.set(w.id, w);
-    saveToFile();
+    await insertWallet(w);
     console.log(`[store] Auto-imported primary wallet: ${account.address}`);
-  } catch { /* invalid mnemonic */ }
-}
-
-loadEnvWallet();
-
-export function getWallets(): StoredWallet[] {
-  return [...wallets.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-}
-
-export function getWallet(id: string): StoredWallet | undefined {
-  return wallets.get(id);
-}
-
-export function removeWallet(id: string): boolean {
-  const deleted = wallets.delete(id);
-  if (deleted) saveToFile();
-  return deleted;
-}
-
-export function updateWalletLabel(id: string, label: string) {
-  const w = wallets.get(id);
-  if (w) { w.label = label; wallets.set(id, w); saveToFile(); }
-}
-
-export function markVerified(id: string) {
-  const w = wallets.get(id);
-  if (w) { w.verified = true; wallets.set(id, w); saveToFile(); }
+  } catch { /* invalid mnemonic or already exists */ }
 }
 
 export async function parseBulkImport(text: string): Promise<{ imported: number; skipped: number; errors: string[] }> {
@@ -99,7 +97,6 @@ export async function parseBulkImport(text: string): Promise<{ imported: number;
     const clean = line.trim();
     if (!clean) continue;
 
-    // Try private key (64 hex chars, optionally with 0x)
     const hexMatch = clean.match(/^(?:0x)?([a-fA-F0-9]{64})$/);
     if (hexMatch) {
       const key = hexMatch[1];
@@ -107,7 +104,6 @@ export async function parseBulkImport(text: string): Promise<{ imported: number;
       continue;
     }
 
-    // Try mnemonic (12 or 24 lowercase English words)
     const words = clean.toLowerCase().replace(/\s+/g, ' ').split(' ').filter(w => /^[a-z]+$/.test(w));
     if (words.length === 12 || words.length === 24) {
       const phrase = words.join(' ');
@@ -117,23 +113,30 @@ export async function parseBulkImport(text: string): Promise<{ imported: number;
 
   let imported = 0;
   let skipped = 0;
+  const count = await getWalletCount();
+  let walletNum = count;
 
   for (let i = 0; i < mnemonics.length; i++) {
     try {
       const hdWallet = await DirectSecp256k1HdWallet.fromMnemonic(mnemonics[i], { prefix: ADDRESS_PREFIX });
       const [account] = await hdWallet.getAccounts();
-      if ([...wallets.values()].some(w => w.address === account.address)) { skipped++; continue; }
+      walletNum++;
       const w: StoredWallet = {
         id: randomUUID(),
-        label: `Wallet ${wallets.size + 1}`,
+        label: `Wallet ${walletNum}`,
         address: account.address,
         mnemonic: mnemonics[i],
         verified: false,
         createdAt: new Date().toISOString(),
         type: 'mnemonic',
       };
-      wallets.set(w.id, w);
-      imported++;
+      await insertWallet(w);
+      const existing = await getWallet(w.id);
+      if (existing) {
+        imported++;
+      } else {
+        skipped++;
+      }
     } catch (e: any) {
       errors.push(`Mnemonic ${i + 1}: ${e?.message ?? 'invalid'}`);
       skipped++;
@@ -145,24 +148,28 @@ export async function parseBulkImport(text: string): Promise<{ imported: number;
       const keyBytes = Buffer.from(privateKeys[i], 'hex');
       const pkWallet = await DirectSecp256k1Wallet.fromKey(new Uint8Array(keyBytes), ADDRESS_PREFIX);
       const [account] = await pkWallet.getAccounts();
-      if ([...wallets.values()].some(w => w.address === account.address)) { skipped++; continue; }
+      walletNum++;
       const w: StoredWallet = {
         id: randomUUID(),
-        label: `Wallet ${wallets.size + 1}`,
+        label: `Wallet ${walletNum}`,
         address: account.address,
         privateKey: privateKeys[i],
         verified: false,
         createdAt: new Date().toISOString(),
         type: 'privatekey',
       };
-      wallets.set(w.id, w);
-      imported++;
+      await insertWallet(w);
+      const existing = await getWallet(w.id);
+      if (existing) {
+        imported++;
+      } else {
+        skipped++;
+      }
     } catch (e: any) {
       errors.push(`Key ${i + 1}: ${e?.message ?? 'invalid'}`);
       skipped++;
     }
   }
 
-  if (imported > 0) saveToFile();
   return { imported, skipped, errors };
 }
