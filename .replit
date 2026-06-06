@@ -22,21 +22,21 @@ args = "Meta Earth Check-in Bot"
 
 [[workflows.workflow.tasks]]
 task = "workflow.run"
-args = "Dashboard"
+args = "Start application"
 
 [[workflows.workflow]]
 name = "Meta Earth Check-in Bot"
 author = "agent"
 
+[workflows.workflow.metadata]
+outputType = "console"
+
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "pnpm --filter @workspace/meta-earth-checkin run dev"
 
-[workflows.workflow.metadata]
-outputType = "console"
-
 [[workflows.workflow]]
-name = "Dashboard"
+name = "Start application"
 author = "agent"
 
 [[workflows.workflow.tasks]]
@@ -58,14 +58,6 @@ timeoutMs = 20000
 [[ports]]
 localPort = 5000
 externalPort = 80
-
-[[ports]]
-localPort = 8080
-externalPort = 80
-
-[[ports]]
-localPort = 8081
-externalPort = 8081
 
 [userenv]
 
