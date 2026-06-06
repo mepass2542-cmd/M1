@@ -16,11 +16,14 @@ export const api = {
   // Wallets
   getWallets: () => request<Wallet[]>('/api/wallets'),
 
-  importWallets: (text: string) =>
-    request<{ imported: number; skipped: number; errors: string[] }>('/api/wallets/import', {
+  importWallets: (rawText: string) => {
+    // Normalise line endings before JSON serialisation to avoid control-char parse errors
+    const text = rawText.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    return request<{ imported: number; skipped: number; errors: string[] }>('/api/wallets/import', {
       method: 'POST',
       body: JSON.stringify({ text }),
-    }),
+    });
+  },
 
   deleteWallet: (id: string) =>
     request<{ removed: boolean }>(`/api/wallets/${id}`, { method: 'DELETE' }),

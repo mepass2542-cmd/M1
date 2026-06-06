@@ -39,10 +39,20 @@ router.get('/wallets', (_req, res) => {
 });
 
 router.post('/wallets/import', async (req, res) => {
-  const { text } = req.body as { text: string };
-  if (!text) return res.status(400).json({ error: 'text is required' });
-  const result = await parseBulkImport(text);
-  res.json(result);
+  try {
+    const body = req.body as { text?: unknown } | undefined;
+    const raw = body?.text;
+    if (!raw || typeof raw !== 'string' || !raw.trim()) {
+      return res.status(400).json({ error: 'text is required — paste your mnemonic or private key in the box' });
+    }
+    // Normalise line endings (Windows \r\n → \n) before processing
+    const text = raw.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const result = await parseBulkImport(text);
+    res.json(result);
+  } catch (e: any) {
+    console.error('[import] Unexpected error:', e);
+    res.status(500).json({ error: e?.message ?? 'Import failed' });
+  }
 });
 
 router.delete('/wallets/:id', (req, res) => {
