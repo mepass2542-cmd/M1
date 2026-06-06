@@ -105,7 +105,8 @@ export async function parseBulkImport(text: string): Promise<{ imported: number;
     }
 
     const words = clean.toLowerCase().replace(/\s+/g, ' ').split(' ').filter(w => /^[a-z]+$/.test(w));
-    if (words.length === 12 || words.length === 24) {
+    // BIP39 supports 12, 15, 18, 21, or 24 words
+    if ([12, 15, 18, 21, 24].includes(words.length)) {
       const phrase = words.join(' ');
       if (!mnemonics.includes(phrase)) mnemonics.push(phrase);
     }

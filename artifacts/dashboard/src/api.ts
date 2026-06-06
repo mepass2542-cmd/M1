@@ -24,7 +24,8 @@ export const api = {
     const text = rawText.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
     return request<{ imported: number; skipped: number; errors: string[] }>('/api/wallets/import', {
       method: 'POST',
-      body: JSON.stringify({ text }),
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ text }).toString(),
     });
   },
 

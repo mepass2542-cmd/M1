@@ -42,11 +42,12 @@ router.get('/wallets', async (_req, res) => {
   }
 });
 
-// Import — body is JSON { text: string }
+// Import — body is application/x-www-form-urlencoded { text: string }
 router.post('/wallets/import', async (req, res) => {
   try {
     let raw: string;
     if (req.body && typeof (req.body as any).text === 'string') {
+      // urlencoded or json with text field
       raw = (req.body as any).text;
     } else if (typeof req.body === 'string') {
       raw = req.body;
