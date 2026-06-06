@@ -1,27 +1,28 @@
 ---
 name: Meta Earth check-in mechanism
-description: The real on-chain daily check-in action and why MsgCheckin is wrong
+description: How the daily check-in works on the Meta Earth rollup — fee model, sequence handling, broadcast mode, and what NOT to do.
 ---
 
-## Rule
-The daily check-in is `/metaearth.wstaking.MsgNewRecord` on the **me-hub chain** (RPC `http://118.175.0.247:16657`, chain ID `me-chain`, address prefix `me`).
+# Meta Earth Check-in Mechanism
 
-There is NO `MsgCheckin` module on the live me-hub chain. A `checkin` module exists only in the `meta-earth` repo targeting a separate `gc_20-1` chain (prefix `gc`) where the user wallet has no funds.
+**Rule:** Daily check-in is `MsgCheckIn` (`/stchain.rollapp.checkin.MsgCheckIn`) on the rollup chain `mecheckin_101-1` via RPC `http://118.175.0.247:23011`. Use zero fees (empty amount array). No IBC bridging needed.
 
-## Fields
-- `actionNumber` (proto field 1): alphanumeric only, e.g. `DailyCheckIn20260606` (date-unique)
-- `actionUrl` (proto field 2): non-empty URL, e.g. `https://metaearth.io`
-- `from` (proto field 3): wallet address (signer)
+**Why:** The rollup's minimum gas price (`0.001 umec`) is not enforced — transactions with an empty fee array are accepted. The IBC relayer between me-hub and the rollup has never relayed a packet (both hub channels show next_sequence_receive=1). Attempting to bridge MEC via IBC wastes hub funds. Confirmed working with TX `731C36E75FDF887EE235F16332024CEA864C4E79DB94AD3AC44A2491B3D8A5CF`.
 
-## Fee
-The chain enforces a minimum of **10,000 umec** regardless of actual gas used. Use a fixed fee of 12,000 umec with gas_limit 500,000. Do NOT use `auto` — it estimates gas*price which comes in under the minimum.
+**How to apply:**
+- Fee: `{ amount: [], gas: '200000' }`
+- Use `Tendermint37Client.connect(rpcUrl)` + `SigningStargateClient.createWithSigner(tmClient, signer, { registry })`
+- Use `tmClient.broadcastTxSync({ tx: txBytes })` — NOT `client.broadcastTx()` which waits for block commit and hangs 30s+
+- Sequence mismatch (code 32): parse `expected (\d+)` from the error log and retry — `getSequence` returns committed state but mempool may have pending txs ahead of it. Retry up to 3 times.
+- MsgCheckIn fields: `checkInAddress` (field 1, string) and `checkInMessage` (field 2, string, default `"META EARTH! ME, My Way!"`)
 
-## Why
-`auto` gas estimation returned ~3,900 umec (correct for actual gas used ~75k) but the chain has a flat minimum fee of 10,000 umec. Real on-chain txs use gas_limit=500,000, fee=~10,000-11,000 umec.
+**What NOT to do:**
+- Do NOT send IBC transfers from me-hub — the relayer doesn't work and drains the hub wallet.
+- Do NOT use `client.broadcastTx()` (commit mode) — it times out on this rollup.
+- Do NOT use the me-hub chain for check-ins — check-ins live on the rollup only.
+- Do NOT assume `getSequence()` reflects mempool state — it only reflects committed blocks.
 
 ## Chain topology (mainnet 118.175.0.247)
-- Port 16657 (RPC) / 11317 (REST): me-hub chain, `me-chain`, prefix `me` — where wallets live and MsgNewRecord is submitted
-- Port 26657 (RPC) / 1317 (REST): `gc_20-1` chain, prefix `gc` — separate chain, unrelated to the daily check-in bot
-
-## How to apply
-Any time this bot is modified or a new check-in message type is considered, start from `MsgNewRecord` in `wstaking` on me-hub. Confirmed working with TX `C2B8D30045449EFFC1E9A46E878F97946D31C2EAD398BFF34D360A9E6CCEB681`.
+- Port 23011 (RPC) / 23013 (REST): rollup `mecheckin_101-1`, prefix `me` — where MsgCheckIn is submitted
+- Port 16657 (RPC) / 11317 (REST): me-hub `me-chain`, prefix `me` — holds wallet umec balance, IBC relay broken
+- Port 26657 (RPC) / 1317 (REST): `gc_20-1` chain, prefix `gc` — separate chain, unrelated to daily check-in
