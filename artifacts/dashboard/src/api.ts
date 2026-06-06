@@ -20,13 +20,11 @@ export const api = {
   // Wallets
   getWallets: () => request<Wallet[]>('/api/wallets'),
 
-  // Send mnemonic/key as plain text to avoid JSON control-character parse errors
   importWallets: (rawText: string) => {
     const text = rawText.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
     return request<{ imported: number; skipped: number; errors: string[] }>('/api/wallets/import', {
       method: 'POST',
-      headers: { 'Content-Type': 'text/plain; charset=utf-8' },
-      body: text,
+      body: JSON.stringify({ text }),
     });
   },
 

@@ -42,14 +42,14 @@ router.get('/wallets', async (_req, res) => {
   }
 });
 
-// Import — body is plain text (parsed globally by express.text)
+// Import — body is JSON { text: string }
 router.post('/wallets/import', async (req, res) => {
   try {
     let raw: string;
-    if (typeof req.body === 'string') {
-      raw = req.body;
-    } else if (req.body && typeof (req.body as any).text === 'string') {
+    if (req.body && typeof (req.body as any).text === 'string') {
       raw = (req.body as any).text;
+    } else if (typeof req.body === 'string') {
+      raw = req.body;
     } else {
       raw = '';
     }
