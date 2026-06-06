@@ -1,4 +1,4 @@
-import { Router, Request, Response } from 'express';
+import express, { Router, Request, Response } from 'express';
 import {
   getWallets,
   getWallet,
@@ -38,22 +38,43 @@ router.get('/wallets', (_req, res) => {
   res.json(wallets);
 });
 
-router.post('/wallets/import', async (req, res) => {
-  try {
-    const body = req.body as { text?: unknown } | undefined;
-    const raw = body?.text;
-    if (!raw || typeof raw !== 'string' || !raw.trim()) {
-      return res.status(400).json({ error: 'text is required — paste your mnemonic or private key in the box' });
+// Import uses text/plain body to avoid JSON control-character parse errors
+router.post(
+  '/wallets/import',
+  express.text({ type: ['text/plain', 'application/json', '*/*'], limit: '10mb' }),
+  async (req, res) => {
+    try {
+      // req.body is the raw string (express.text) or an already-parsed object (express.json fallback)
+      let raw: string;
+      if (typeof req.body === 'string') {
+        raw = req.body;
+        // If the client sent JSON-wrapped text, unwrap it
+        if (raw.trimStart().startsWith('{')) {
+          try {
+            const parsed = JSON.parse(raw.replace(/[\x00-\x09\x0B\x0C\x0E-\x1F]/g, ''));
+            raw = typeof parsed.text === 'string' ? parsed.text : raw;
+          } catch { /* treat as raw mnemonic text */ }
+        }
+      } else if (req.body && typeof (req.body as any).text === 'string') {
+        raw = (req.body as any).text;
+      } else {
+        raw = '';
+      }
+
+      // Strip all control characters except \n (normalise \r\n → \n)
+      const text = raw.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
+
+      if (!text) {
+        return res.status(400).json({ error: 'Paste at least one mnemonic or private key' });
+      }
+      const result = await parseBulkImport(text);
+      res.json(result);
+    } catch (e: any) {
+      console.error('[import] Unexpected error:', e);
+      res.status(500).json({ error: e?.message ?? 'Import failed' });
     }
-    // Normalise line endings (Windows \r\n → \n) before processing
-    const text = raw.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-    const result = await parseBulkImport(text);
-    res.json(result);
-  } catch (e: any) {
-    console.error('[import] Unexpected error:', e);
-    res.status(500).json({ error: e?.message ?? 'Import failed' });
   }
-});
+);
 
 router.delete('/wallets/:id', (req, res) => {
   const removed = removeWallet(req.params.id);

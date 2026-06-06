@@ -27,7 +27,9 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
 
 const distPath = path.join(__dirname, '../dist');
 app.use(express.static(distPath));
+// Always serve fresh HTML so browsers pick up new JS bundle hashes
 app.get('/*path', (_req, res) => {
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.sendFile(path.join(distPath, 'index.html'));
 });
 

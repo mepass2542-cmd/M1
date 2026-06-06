@@ -1,9 +1,13 @@
 import type { Wallet, BalanceEntry, CheckInResult, SweepWalletResult, SweepMode, TxResult } from './types';
 
-async function request<T>(url: string, init?: RequestInit): Promise<T> {
+async function request<T>(url: string, init?: RequestInit & { headers?: Record<string, string> }): Promise<T> {
+  const { headers: extraHeaders, ...rest } = init ?? {};
   const res = await fetch(url, {
-    headers: { 'Content-Type': 'application/json' },
-    ...init,
+    headers: {
+      'Content-Type': 'application/json',
+      ...extraHeaders,   // allows per-call override (e.g. text/plain)
+    },
+    ...rest,
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
@@ -16,12 +20,13 @@ export const api = {
   // Wallets
   getWallets: () => request<Wallet[]>('/api/wallets'),
 
+  // Send mnemonic/key as plain text to avoid JSON control-character parse errors
   importWallets: (rawText: string) => {
-    // Normalise line endings before JSON serialisation to avoid control-char parse errors
-    const text = rawText.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const text = rawText.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
     return request<{ imported: number; skipped: number; errors: string[] }>('/api/wallets/import', {
       method: 'POST',
-      body: JSON.stringify({ text }),
+      headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+      body: text,
     });
   },
 
