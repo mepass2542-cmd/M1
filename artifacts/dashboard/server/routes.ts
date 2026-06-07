@@ -10,6 +10,10 @@ import {
 } from './store';
 import {
   getAllBalances,
+  getHubBalance,
+  getRollupBalances,
+  getStakingDelegations,
+  getStakingRewards,
   performCheckin,
   hubSend,
   rollupSendAll,
@@ -199,6 +203,36 @@ router.post('/sweep', async (req, res) => {
     res.json(results);
   } catch (e: any) {
     res.status(500).json({ error: e?.message ?? 'Sweep failed' });
+  }
+});
+
+// ─── Diagnose (production test — read-only) ───────────────────────────────────
+
+router.get('/diagnose/:address', async (req, res) => {
+  const { address } = req.params;
+  try {
+    const [hubBalance, rollupBalances, delegations, stakingRewards] = await Promise.all([
+      getHubBalance(address),
+      getRollupBalances(address, NETWORK),
+      getStakingDelegations(address),
+      getStakingRewards(address),
+    ]);
+    res.json({
+      address,
+      network: NETWORK,
+      hub: { balanceUmec: hubBalance, balanceMec: (hubBalance / 1e6).toFixed(6) },
+      rollup: { coins: rollupBalances, total: rollupBalances.reduce((s, b) => s + b.amount, 0) },
+      staking: {
+        delegations,
+        pendingRewardsUmec: stakingRewards,
+        pendingRewardsMec: (stakingRewards / 1e6).toFixed(6),
+        note: delegations.length > 0 && stakingRewards === 0
+          ? 'Rewards API returned 0 (hub query bug) — withdrawal will still be attempted on-chain'
+          : undefined,
+      },
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message ?? 'Diagnose failed' });
   }
 });
 

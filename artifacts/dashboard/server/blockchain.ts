@@ -4,7 +4,7 @@ import {
   Registry,
   OfflineSigner,
 } from '@cosmjs/proto-signing';
-import { SigningStargateClient } from '@cosmjs/stargate';
+import { SigningStargateClient, defaultRegistryTypes } from '@cosmjs/stargate';
 import { Tendermint37Client } from '@cosmjs/tendermint-rpc';
 import { Type, Field, Root, Writer } from 'protobufjs';
 import { StoredWallet } from './store';
@@ -84,7 +84,8 @@ async function buildHubClient(wallet: StoredWallet): Promise<SigningStargateClie
 async function buildRollupClient(wallet: StoredWallet, network = 'mainnet') {
   const signer = await buildSigner(wallet);
   const rpc = ROLLUP_RPC[network] ?? ROLLUP_RPC.mainnet;
-  const registry = new Registry();
+  // Include ALL default Cosmos types (MsgSend, etc.) PLUS the custom MsgCheckIn
+  const registry = new Registry([...defaultRegistryTypes]);
   registry.register(CHECKIN_TYPE_URL, MsgCheckInType as any);
   const tmClient = await Tendermint37Client.connect(rpc);
   const client = await SigningStargateClient.createWithSigner(tmClient, signer, { registry });
@@ -261,7 +262,7 @@ export async function rollupSendAll(
 ): Promise<TxResult> {
   const balances = await getRollupBalances(wallet.address, network);
   const nonZero = balances.filter(b => b.amount > 0);
-  if (nonZero.length === 0) return { success: false, note: 'No rollup balance to sweep' };
+  if (nonZero.length === 0) return { success: true, note: 'No rollup balance — nothing to sweep' };
 
   const msgs = nonZero.map(b => ({
     typeUrl: '/cosmos.bank.v1beta1.MsgSend',
@@ -329,6 +330,7 @@ export async function autoSweep(
 ): Promise<SweepStepResult[]> {
   const results: SweepStepResult[] = [];
   const push = (step: string, r: TxResult) => results.push({ step, ...r });
+  const TXN_FEE = 12000;
 
   // ── Staking-only ──────────────────────────────────────────────────────────
   if (mode === 'staking') {
@@ -345,94 +347,46 @@ export async function autoSweep(
   // ── Hub-only ──────────────────────────────────────────────────────────────
   if (mode === 'hub') {
     const hubBalance = await getHubBalance(wallet.address);
-    const txFee = 12000;
-    const available = hubBalance - minHubReserveUmec - txFee;
+    const available = hubBalance - minHubReserveUmec - TXN_FEE;
     if (available > 0) {
       push('Sweep Hub Balance', await hubSend(wallet, destination, available));
     } else {
-      const reserved = ((minHubReserveUmec + txFee) / 1_000_000).toFixed(6);
-      const bal = (hubBalance / 1_000_000).toFixed(6);
-      push('Sweep Hub Balance', { success: false, error: `Hub balance ${bal} MEC is below reserve ${reserved} MEC` });
+      push('Sweep Hub Balance', {
+        success: false,
+        error: `Hub balance ${(hubBalance / 1e6).toFixed(4)} MEC is below reserve + fee (${((minHubReserveUmec + TXN_FEE) / 1e6).toFixed(4)} MEC minimum)`,
+      });
     }
     return results;
   }
 
-  // ── All-inclusive: atomic claim + sweep ───────────────────────────────────
-  // Query hub balance, pending staking rewards, and validators in parallel
-  const [validators, hubBalance, stakingRewards] = await Promise.all([
-    getStakingDelegations(wallet.address),
-    getHubBalance(wallet.address),
-    getStakingRewards(wallet.address),
-  ]);
-
-  const TXN_FEE = 12000;
-  // Include pending staking rewards in available calculation
-  const totalAvailable = hubBalance + stakingRewards - minHubReserveUmec - TXN_FEE;
-
-  try {
-    const client = await buildHubClient(wallet);
-    const msgs: any[] = [];
-
-    // Claim all validator rewards first (if any delegations)
-    if (validators.length > 0 && stakingRewards > 0) {
-      for (const v of validators) {
-        msgs.push({
-          typeUrl: '/cosmos.distribution.v1beta1.MsgWithdrawDelegatorReward',
-          value: { delegatorAddress: wallet.address, validatorAddress: v },
-        });
-      }
-    } else if (validators.length === 0) {
-      push('Withdraw Staking Rewards', { success: true, note: 'No delegations — nothing to withdraw' });
-    } else {
-      push('Withdraw Staking Rewards', { success: true, note: 'Staking rewards are 0 — nothing to withdraw' });
-    }
-
-    // Send hub balance (+ rewards if claimed above) to destination
-    if (totalAvailable > 0) {
-      msgs.push({
-        typeUrl: '/cosmos.bank.v1beta1.MsgSend',
-        value: {
-          fromAddress: wallet.address,
-          toAddress: destination,
-          amount: [{ denom: 'umec', amount: String(Math.floor(totalAvailable)) }],
-        },
-      });
-    }
-
-    if (msgs.length > 0) {
-      // Scale gas with number of messages (each MsgWithdrawDelegatorReward ~80k gas)
-      const gasAmount = 200000 + validators.length * 80000;
-      const fee = { amount: [{ denom: 'umec', amount: '12000' }], gas: String(gasAmount) };
-      const result = await client.signAndBroadcast(wallet.address, msgs, fee, '');
-
-      const hasWithdraw = validators.length > 0 && stakingRewards > 0;
-      const hasSend = totalAvailable > 0;
-      const stepLabel = hasWithdraw && hasSend
-        ? `Withdraw Staking Rewards (${(stakingRewards / 1e6).toFixed(4)} MEC) + Sweep Hub`
-        : hasWithdraw
-        ? 'Withdraw Staking Rewards'
-        : 'Sweep Hub Balance';
-
-      if (result.code !== 0) {
-        push(stepLabel, { success: false, error: `code ${result.code}: ${result.rawLog}` });
-      } else {
-        push(stepLabel, { success: true, txHash: result.transactionHash });
-      }
-    } else {
-      // Nothing to send
-      const reserved = ((minHubReserveUmec + TXN_FEE) / 1_000_000).toFixed(6);
-      const bal = (hubBalance / 1_000_000).toFixed(6);
-      const rewards = (stakingRewards / 1_000_000).toFixed(6);
-      push('Sweep Hub Balance', {
-        success: false,
-        error: `Hub balance ${bal} MEC + rewards ${rewards} MEC is below reserve + fee (${reserved} MEC)`,
-      });
-    }
-  } catch (err: any) {
-    push('Hub + Staking Operations', { success: false, error: err?.message ?? String(err) });
+  // ── All-inclusive: 3-step sequential sweep ────────────────────────────────
+  //
+  // Step 1: Withdraw staking rewards
+  //   Always attempts withdrawal if delegations exist — does NOT gate on the
+  //   reported reward amount because the hub's rewards query API is unreliable
+  //   (returns code 13 runtime error). The on-chain execution works regardless.
+  //
+  const validators = await getStakingDelegations(wallet.address);
+  if (validators.length > 0) {
+    push('Withdraw Staking Rewards', await withdrawStakingRewards(wallet));
+    // Staking rewards have now landed in hub wallet (signAndBroadcast waits for block)
+  } else {
+    push('Withdraw Staking Rewards', { success: true, note: 'No staking delegations on this wallet' });
   }
 
-  // ── Rollup sweep (separate chain — always runs independently) ─────────────
+  // Step 2: Sweep hub — re-query AFTER reward withdrawal so balance includes landed rewards
+  const hubBalance = await getHubBalance(wallet.address);
+  const available = hubBalance - minHubReserveUmec - TXN_FEE;
+  if (available > 0) {
+    push('Sweep Hub Balance', await hubSend(wallet, destination, available));
+  } else {
+    push('Sweep Hub Balance', {
+      success: false,
+      error: `Hub balance ${(hubBalance / 1e6).toFixed(4)} MEC is below reserve + fee (${((minHubReserveUmec + TXN_FEE) / 1e6).toFixed(4)} MEC minimum)`,
+    });
+  }
+
+  // Step 3: Sweep rollup (separate chain — runs independently of hub steps)
   push('Sweep Rollup Balance', await rollupSendAll(wallet, destination, network));
 
   return results;
