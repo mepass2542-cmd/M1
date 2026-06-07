@@ -3,7 +3,7 @@ import * as admin from 'firebase-admin';
 
 let _initialised = false;
 
-function ensureAdmin() {
+export function ensureAdmin(): void {
   if (_initialised) return;
   _initialised = true;
   admin.initializeApp({
@@ -11,10 +11,16 @@ function ensureAdmin() {
   });
 }
 
+/** Returns the Firestore instance (initialises Firebase Admin first). */
+export function getFirestoreDb(): admin.firestore.Firestore {
+  ensureAdmin();
+  return admin.firestore();
+}
+
 /**
  * Express middleware — verifies the Firebase ID token from the
  * `Authorization: Bearer <token>` header.
- * Returns 401 if missing or invalid, otherwise sets req.uid and calls next().
+ * Returns 401 if missing or invalid, otherwise sets req.uid / req.email and calls next().
  */
 export async function requireAuth(req: Request, res: Response, next: NextFunction) {
   ensureAdmin();

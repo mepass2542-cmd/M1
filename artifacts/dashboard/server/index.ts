@@ -3,7 +3,7 @@ import cors from 'cors';
 import path from 'path';
 import * as dotenv from 'dotenv';
 import { initDb } from './db';
-import { loadEnvWallet } from './store';
+import { loadEnvWallet, migrateWalletsToFirestore } from './store';
 import { router } from './routes';
 import { startScheduler } from './scheduler';
 import { requireAuth } from './auth';
@@ -40,6 +40,7 @@ app.get('/*path', (_req, res) => {
 async function start() {
   try {
     await initDb();
+    await migrateWalletsToFirestore();
     await loadEnvWallet();
     startScheduler();
   } catch (e) {
