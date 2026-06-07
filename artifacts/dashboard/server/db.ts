@@ -50,8 +50,6 @@ export async function initDb() {
   await pool.query(`ALTER TABLE topup_config ADD COLUMN IF NOT EXISTS ibc_enabled BOOLEAN NOT NULL DEFAULT FALSE`);
   await pool.query(`ALTER TABLE topup_config ADD COLUMN IF NOT EXISTS ibc_threshold_umec INT NOT NULL DEFAULT 5000`);
   await pool.query(`ALTER TABLE topup_config ADD COLUMN IF NOT EXISTS ibc_amount_umec INT NOT NULL DEFAULT 50000`);
-  // Add type column to topup_log for hub vs ibc entries
-  await pool.query(`ALTER TABLE topup_log ADD COLUMN IF NOT EXISTS tx_type TEXT NOT NULL DEFAULT 'hub'`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS topup_log (
@@ -70,6 +68,9 @@ export async function initDb() {
   await pool.query(`
     CREATE INDEX IF NOT EXISTS topup_log_executed_idx ON topup_log (executed_at DESC)
   `);
+
+  // Migration — add tx_type column to topup_log for hub vs ibc entries
+  await pool.query(`ALTER TABLE topup_log ADD COLUMN IF NOT EXISTS tx_type TEXT NOT NULL DEFAULT 'hub'`);
 
   console.log('[db] Tables ready (wallets + checkin_log + topup_config + topup_log)');
 }
