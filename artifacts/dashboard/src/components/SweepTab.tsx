@@ -6,7 +6,7 @@ import type { SweepWalletResult, SweepMode } from '../types';
 const UMEC_PER_MEC = 1_000_000;
 
 const MODES: { id: SweepMode; label: string; desc: string }[] = [
-  { id: 'all', label: '🔄 All-Inclusive', desc: 'Withdraw staking rewards → sweep rollup → sweep hub balance (minus reserve)' },
+  { id: 'all', label: '🔄 All-Inclusive', desc: 'Withdraw staking rewards → sweep hub balance (minus reserve) → sweep rollup tokens.' },
   { id: 'hub', label: '🔵 Hub Only', desc: 'Send hub MEC to destination, keeping min reserve for fees.' },
   { id: 'rollup', label: '🟣 Rollup Only', desc: 'Send all rollup tokens to destination address (zero fee).' },
   { id: 'staking', label: '🏆 Staking Only', desc: 'Withdraw delegation rewards from hub validators.' },
@@ -56,12 +56,17 @@ export function SweepTab() {
     }
   };
 
+  const needsDestination = mode !== 'staking';
+
   const runSweep = async () => {
     setError(null);
-    if (!destination.trim()) { setError('Enter a destination address.'); return; }
+    if (needsDestination && !destination.trim()) { setError('Enter a destination address.'); return; }
     if (selected.size === 0) { setError('Select at least one wallet.'); return; }
     const minReserveUmec = mecToUmec(minReserveMec);
-    if (!confirm(`Run ${mode === 'all' ? 'all-inclusive' : mode + '-only'} sweep for ${selected.size} wallet(s)?\n\nDestination: ${shortAddr(destination)}\nMin reserve: ${minReserveMec} MEC`)) return;
+    const confirmMsg = mode === 'staking'
+      ? `Withdraw staking rewards for ${selected.size} wallet(s)?`
+      : `Run ${mode === 'all' ? 'all-inclusive' : mode + '-only'} sweep for ${selected.size} wallet(s)?\n\nDestination: ${shortAddr(destination)}\nMin reserve: ${minReserveMec} MEC`;
+    if (!confirm(confirmMsg)) return;
 
     setRunning(true);
     setResults([]);
@@ -116,7 +121,9 @@ export function SweepTab() {
 
         {/* Destination */}
         <div className="space-y-1.5">
-          <label className="text-xs font-medium text-slate-400 uppercase tracking-wider">Destination Address</label>
+          <label className="text-xs font-medium text-slate-400 uppercase tracking-wider">
+            Destination Address{!needsDestination && <span className="ml-2 text-amber-400 normal-case font-normal">(not required for Staking-Only)</span>}
+          </label>
           <div className="flex gap-2">
             <input
               value={destination}
@@ -190,7 +197,7 @@ export function SweepTab() {
 
       <button
         onClick={runSweep}
-        disabled={running || selected.size === 0 || !destination}
+        disabled={running || selected.size === 0 || (needsDestination && !destination.trim())}
         className="w-full py-3 bg-amber-600 hover:bg-amber-500 disabled:opacity-40 text-white text-sm font-medium rounded-lg transition-colors"
       >
         {running ? '⏳ Sweeping — this may take a minute…' : `🔄 Run ${MODES.find(m => m.id === mode)?.label ?? 'Sweep'} (${selected.size} wallet${selected.size !== 1 ? 's' : ''})`}

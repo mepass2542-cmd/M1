@@ -245,7 +245,10 @@ export async function getAllBalances(address: string, network = 'mainnet'): Prom
     getRollupBalances(address, network),
     getStakingRewards(address),
   ]);
-  const rollupTotal = rollup.reduce((s, b) => s + b.amount, 0);
+  // Only count the IBC MEC denom — other rollup-native tokens use different
+  // denominations and must NOT be summed into the MEC balance display.
+  const ibcMec = rollup.find(b => b.denom === ROLLUP_IBC_DENOM);
+  const rollupTotal = ibcMec?.amount ?? 0;
   return { hub, rollup, rollupTotal, staking };
 }
 
