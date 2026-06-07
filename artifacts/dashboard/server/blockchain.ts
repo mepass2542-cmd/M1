@@ -211,8 +211,52 @@ export async function getStakingRewards(address: string): Promise<number> {
       `${HUB_REST}/cosmos/distribution/v1beta1/delegators/${address}/rewards`
     );
     const json = (await res.json()) as any;
-    const total = (json.total ?? []).find((c: any) => c.denom === 'umec');
-    return total ? Math.floor(parseFloat(total.amount)) : 0;
+
+    // Happy path — aggregated total is present
+    if (!json.code && Array.isArray(json.total)) {
+      const total = json.total.find((c: any) => c.denom === 'umec');
+      if (total) return Math.floor(parseFloat(total.amount));
+      // total array present but no umec entry — sum per-validator rewards in same payload
+      let sum = 0;
+      for (const v of (json.rewards ?? [])) {
+        const coin = (v.reward ?? []).find((c: any) => c.denom === 'umec');
+        if (coin) sum += parseFloat(coin.amount);
+      }
+      return Math.floor(sum);
+    }
+
+    // Aggregated endpoint returned a gRPC error (e.g. code 5 — one validator has no
+    // distribution info yet). Fall back to querying each validator individually.
+    return await getStakingRewardsPerValidator(address);
+  } catch {
+    return 0;
+  }
+}
+
+async function getStakingRewardsPerValidator(address: string): Promise<number> {
+  try {
+    const delegRes = await fetchWithTimeout(
+      `${HUB_REST}/cosmos/staking/v1beta1/delegations/${address}`
+    );
+    const delegJson = (await delegRes.json()) as any;
+    const validators: string[] = (delegJson.delegation_responses ?? [])
+      .map((d: any) => d.delegation?.validator_address)
+      .filter(Boolean);
+
+    let sum = 0;
+    for (const v of validators) {
+      try {
+        const r = await fetchWithTimeout(
+          `${HUB_REST}/cosmos/distribution/v1beta1/delegators/${address}/rewards/${v}`,
+          6_000
+        );
+        const rj = (await r.json()) as any;
+        if (rj.code !== undefined) continue; // this validator has no distribution info yet
+        const coin = (rj.rewards ?? []).find((c: any) => c.denom === 'umec');
+        if (coin) sum += parseFloat(coin.amount);
+      } catch { /* skip this validator */ }
+    }
+    return Math.floor(sum);
   } catch {
     return 0;
   }
@@ -365,12 +409,60 @@ export async function withdrawStakingRewards(wallet: StoredWallet): Promise<TxRe
       typeUrl: '/cosmos.distribution.v1beta1.MsgWithdrawDelegatorReward',
       value: { delegatorAddress: wallet.address, validatorAddress: v },
     }));
+
+    // Try all validators in one batch first (efficient)
     const result = await client.signAndBroadcast(wallet.address, msgs, HUB_FEE, '');
-    if (result.code !== 0) return { success: false, error: `code ${result.code}: ${result.rawLog}` };
-    return { success: true, txHash: result.transactionHash };
+    if (result.code === 0) return { success: true, txHash: result.transactionHash };
+
+    const log = result.rawLog ?? '';
+
+    // "no delegation distribution info" — one or more validators haven't distributed yet.
+    // Fall back to individual per-validator withdrawals, skipping the ones with no rewards.
+    if (log.includes('no delegation distribution info')) {
+      return await withdrawStakingRewardsIndividually(wallet, validators, client);
+    }
+
+    return { success: false, error: `code ${result.code}: ${log}` };
   } catch (err: any) {
     return { success: false, error: err?.message ?? String(err) };
   }
+}
+
+async function withdrawStakingRewardsIndividually(
+  wallet: StoredWallet,
+  validators: string[],
+  client: SigningStargateClient
+): Promise<TxResult> {
+  const hashes: string[] = [];
+  let noInfoCount = 0;
+
+  for (const v of validators) {
+    try {
+      const msg = {
+        typeUrl: '/cosmos.distribution.v1beta1.MsgWithdrawDelegatorReward',
+        value: { delegatorAddress: wallet.address, validatorAddress: v },
+      };
+      const r = await client.signAndBroadcast(wallet.address, [msg], HUB_FEE, '');
+      if (r.code === 0) {
+        hashes.push(r.transactionHash);
+      } else if ((r.rawLog ?? '').includes('no delegation distribution info')) {
+        noInfoCount++;
+      }
+      // brief pause so next tx picks up incremented sequence from the chain
+      await new Promise(res => setTimeout(res, 800));
+    } catch { /* skip this validator */ }
+  }
+
+  if (hashes.length > 0) {
+    const note = noInfoCount > 0
+      ? `${noInfoCount} validator(s) had no rewards yet — skipped`
+      : undefined;
+    return { success: true, txHash: hashes[0], note };
+  }
+  if (noInfoCount === validators.length) {
+    return { success: true, note: 'No rewards to withdraw yet — validators have not distributed any rewards' };
+  }
+  return { success: false, error: 'All per-validator reward withdrawals failed' };
 }
 
 export type SweepMode = 'all' | 'hub' | 'rollup' | 'staking';
