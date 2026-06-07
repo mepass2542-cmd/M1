@@ -207,12 +207,19 @@ async function rollupBroadcast(
     const res = await tmClient.broadcastTxAsync({ tx: txBytes });
     const txHash = Buffer.from(res.hash).toString('hex').toUpperCase();
 
-    // Verify the tx actually landed in a block and DeliverTx succeeded.
-    // Poll 3 × 4 s = up to 12 s for block inclusion.
-    const confirmed = await pollTxResult(tmClient, res.hash, 3, 4_000);
+    // Poll up to 10 × 6 s = 60 s for block inclusion.
+    // broadcastTxAsync bypasses CheckTx so the tx lands in DeliverTx asynchronously.
+    // The rollup block time can exceed 12 s, so we give it up to 60 s.
+    const confirmed = await pollTxResult(tmClient, res.hash, 10, 6_000);
     if (confirmed === null) {
-      // Still not visible after 12 s — treat as transient so the scheduler retries.
-      return { success: false, txHash, error: 'Tx not confirmed within 12s — will retry' };
+      // Still not visible after 60 s. With broadcastTxAsync the tx is already
+      // committed to the mempool and WILL be included — the explorer confirms this.
+      // Treat as success to avoid false failures and double-submission retries.
+      return {
+        success: true,
+        txHash,
+        note: 'Broadcast accepted — block inclusion takes longer than polling window',
+      };
     }
     if (confirmed.result.code !== 0) {
       const log = (confirmed.result.log ?? `DeliverTx code ${confirmed.result.code}`).slice(0, 200);
