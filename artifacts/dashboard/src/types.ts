@@ -71,6 +71,7 @@ export interface SchedulerRunResult {
 export interface SchedulerState {
   cronExpr: string;
   lastRunAt: string | null;
+  nextRunAt: string | null;
   isRunning: boolean;
   lastResults: SchedulerRunResult[];
 }

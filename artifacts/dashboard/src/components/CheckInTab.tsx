@@ -14,6 +14,17 @@ function relTime(iso: string | null): string {
   if (h < 24) return `${h}h ago`;
   return `${Math.floor(h / 24)}d ago`;
 }
+function timeUntil(iso: string | null): string {
+  if (!iso) return '—';
+  const diff = new Date(iso).getTime() - Date.now();
+  if (diff <= 0) return 'any moment';
+  const m = Math.floor(diff / 60000);
+  if (m < 60) return `in ${m}m`;
+  const h = Math.floor(m / 60);
+  const rem = m % 60;
+  if (h < 24) return rem > 0 ? `in ${h}h ${rem}m` : `in ${h}h`;
+  return `in ${Math.floor(h / 24)}d ${h % 24}h`;
+}
 function fmtTime(iso: string): string {
   return new Date(iso).toLocaleString(undefined, {
     month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
@@ -172,6 +183,7 @@ export function CheckInTab() {
               <p className="text-xs text-slate-400 mt-0.5">
                 Cron: <code className="text-blue-400">{schedule?.cronExpr ?? '—'}</code> UTC
                 {' · '}Last run: <span className="text-slate-300">{relTime(schedule?.lastRunAt ?? null)}</span>
+                {' · '}Next run: <span className="text-blue-300 font-medium">{timeUntil(schedule?.nextRunAt ?? null)}</span>
                 {' · '}Best streak: <span className="text-amber-400">{maxStreak} day{maxStreak !== 1 ? 's' : ''}</span>
               </p>
             </div>
@@ -195,8 +207,14 @@ export function CheckInTab() {
 
           {/* Scheduler info */}
           <div className="bg-slate-800/50 border border-slate-700/50 rounded-lg px-4 py-3 text-xs text-slate-400 space-y-1">
-            <p><span className="text-slate-300 font-medium">How it works:</span> The scheduler runs automatically every day at the time set by your <code className="text-blue-400">CRON_SCHEDULE</code> secret (default: 09:00 UTC). It checks in every wallet in your DB, retries failures up to 3× (2 min apart), and logs all results. On server restart, if any wallet missed today's check-in it runs immediately — <span className="text-green-400 font-medium">your streak is never lost</span>.</p>
-            <p>Set <code className="text-blue-400">CRON_SCHEDULE</code> in Replit Secrets to change timing (e.g. <code className="text-slate-300">0 6 * * *</code> for 06:00 UTC).</p>
+            <p><span className="text-slate-300 font-medium">Always-on, never misses a streak:</span></p>
+            <ul className="list-disc list-inside space-y-0.5 pl-1">
+              <li><span className="text-slate-300">Daily cron</span> — runs at your <code className="text-blue-400">CRON_SCHEDULE</code> (default 09:00 UTC) for every wallet</li>
+              <li><span className="text-slate-300">Startup catch-up</span> — on server restart, any wallet that missed today is checked in immediately</li>
+              <li><span className="text-slate-300">Watchdog</span> — scans every 5 minutes; any wallet that hasn't checked in today is checked in automatically</li>
+              <li><span className="text-slate-300">New wallet auto-check-in</span> — when you import wallets they are checked in instantly, today's streak starts right away</li>
+            </ul>
+            <p className="pt-0.5">Set <code className="text-blue-400">CRON_SCHEDULE</code> in Replit Secrets to change timing (e.g. <code className="text-slate-300">0 6 * * *</code> for 06:00 UTC).</p>
           </div>
 
           {/* Per-wallet streak table */}

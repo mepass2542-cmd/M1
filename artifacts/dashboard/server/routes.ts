@@ -29,6 +29,7 @@ import {
 import {
   getSchedulerState,
   runAllCheckins,
+  runCheckinForNewWallets,
   getCheckinHistory,
   getAllWalletStats,
 } from './scheduler';
@@ -90,6 +91,15 @@ router.post('/wallets/import', async (req, res) => {
 
     const result = await parseBulkImport(text);
     res.json(result);
+
+    // Auto check-in any newly imported wallets that haven't checked in today
+    if (result.imported > 0) {
+      const allWallets = await getWallets();
+      const newIds = allWallets.slice(-result.imported).map(w => w.id);
+      runCheckinForNewWallets(newIds).catch(e =>
+        console.error('[import] Auto check-in error:', e?.message)
+      );
+    }
   } catch (e: any) {
     console.error('[import] Unexpected error:', e);
     res.status(500).json({ error: e?.message ?? 'Import failed' });
