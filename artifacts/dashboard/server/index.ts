@@ -3,7 +3,7 @@ import cors from 'cors';
 import path from 'path';
 import * as dotenv from 'dotenv';
 import { initDb } from './db';
-import { loadEnvWallet, migrateWalletsToFirestore } from './store';
+import { loadEnvWallet, migrateWalletsToFirestore, syncFirestoreWalletsToPg } from './store';
 import { router } from './routes';
 import { startScheduler } from './scheduler';
 import { requireAuth } from './auth';
@@ -41,6 +41,7 @@ async function start() {
   try {
     await initDb();
     await migrateWalletsToFirestore();
+    await syncFirestoreWalletsToPg();
     await loadEnvWallet();
     startScheduler();
   } catch (e) {

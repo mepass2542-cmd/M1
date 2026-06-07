@@ -1,7 +1,7 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '../api';
 import { useApp } from '../App';
-import type { TopupConfig, TopupRunSummary, TopupLogEntry } from '../types';
+import type { TopupConfig, TopupRunSummary, TopupRunState, TopupLogEntry } from '../types';
 
 function umecToMec(u: number) { return (u / 100_000_000).toFixed(8); } // exponent 8
 function relTime(iso: string): string {
@@ -64,6 +64,7 @@ export function TopUpTab() {
   const [running, setRunning] = useState(false);
   const [summary, setSummary] = useState<TopupRunSummary | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const [history, setHistory] = useState<TopupLogEntry[]>([]);
   const [histLoading, setHistLoading] = useState(false);
@@ -90,17 +91,43 @@ export function TopUpTab() {
     }
   };
 
+  const stopPolling = () => {
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+  };
+
   const runNow = async () => {
     setRunning(true); setSummary(null); setRunError(null);
     try {
-      const s = await api.runTopup();
-      setSummary(s);
+      await api.runTopup(); // fire-and-forget on server — returns { started: true }
     } catch (e: any) {
-      setRunError(e.message ?? 'Top-up failed');
-    } finally {
+      setRunError(e.message ?? 'Failed to start top-up');
       setRunning(false);
+      return;
     }
+    // Poll /topup/status every 2.5 s until the run finishes
+    stopPolling();
+    pollRef.current = setInterval(async () => {
+      try {
+        const state: TopupRunState = await api.getTopupStatus();
+        if (!state.isRunning) {
+          stopPolling();
+          if (state.lastError) setRunError(state.lastError);
+          if (state.lastSummary) setSummary(state.lastSummary);
+          setRunning(false);
+        }
+      } catch { /* keep polling on transient errors */ }
+    }, 2500);
+    // Safety timeout — stop after 5 minutes
+    setTimeout(() => {
+      if (pollRef.current) {
+        stopPolling();
+        setRunning(false);
+        setRunError('Top-up status polling timed out — check server logs');
+      }
+    }, 5 * 60 * 1000);
   };
+
+  useEffect(() => () => stopPolling(), []);
 
   const loadHistory = async () => {
     setHistLoading(true);

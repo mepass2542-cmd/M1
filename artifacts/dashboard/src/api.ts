@@ -1,7 +1,7 @@
 import type {
   Wallet, BalanceEntry, CheckInResult, SweepWalletResult, SweepMode, TxResult,
   SchedulerState, WalletCheckinStats, CheckinLogEntry,
-  TopupConfig, TopupRunSummary, TopupLogEntry,
+  TopupConfig, TopupRunSummary, TopupRunState, TopupLogEntry,
   WalletStakingInfo,
 } from './types';
 import { auth } from './firebase';
@@ -139,7 +139,8 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(cfg),
     }),
-  runTopup:        () => request<TopupRunSummary>('/api/topup/run', { method: 'POST' }),
+  runTopup:        () => request<{ started: boolean }>('/api/topup/run', { method: 'POST' }),
+  getTopupStatus:  () => request<TopupRunState>('/api/topup/status'),
   getTopupHistory: (limit = 100) =>
     request<TopupLogEntry[]>(`/api/topup/history?limit=${limit}`),
 };

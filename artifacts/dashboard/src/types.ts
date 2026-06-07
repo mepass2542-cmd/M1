@@ -165,6 +165,14 @@ export interface TopupRunSummary {
   masterLabel: string;
 }
 
+export interface TopupRunState {
+  isRunning: boolean;
+  startedAt: string | null;
+  lastRunAt: string | null;
+  lastSummary: TopupRunSummary | null;
+  lastError: string | null;
+}
+
 export interface TopupLogEntry {
   id: number;
   wallet_id: string;

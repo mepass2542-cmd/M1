@@ -48,21 +48,41 @@ function walletToDoc(w: StoredWallet): Record<string, any> {
 // ── PostgreSQL sync helper (no credentials — only for FK integrity) ───────────
 
 async function pgUpsertWallet(w: StoredWallet): Promise<void> {
+  // Single valid ON CONFLICT clause — conflicts on id (primary key) do an update.
+  // If address conflicts (same address, different id), catch and ignore — already synced.
   await pool.query(
     `INSERT INTO wallets (id, label, address, mnemonic, private_key, verified, created_at, type)
      VALUES ($1, $2, $3, NULL, NULL, $4, $5, $6)
-     ON CONFLICT (id)   DO UPDATE SET label = $2, verified = $4
-     ON CONFLICT (address) DO NOTHING`,
+     ON CONFLICT (id) DO UPDATE SET label = EXCLUDED.label, verified = EXCLUDED.verified`,
     [w.id, w.label, w.address, w.verified, w.createdAt, w.type]
-  ).catch(() => {
-    // Fallback: try upsert by address (address unique constraint)
-    return pool.query(
-      `INSERT INTO wallets (id, label, address, mnemonic, private_key, verified, created_at, type)
-       VALUES ($1, $2, $3, NULL, NULL, $4, $5, $6)
-       ON CONFLICT (address) DO UPDATE SET label = $2, verified = $4`,
-      [w.id, w.label, w.address, w.verified, w.createdAt, w.type]
-    );
-  });
+  ).catch(() => { /* address unique conflict — already in postgres under same address */ });
+}
+
+/**
+ * Startup sync: ensures every Firestore wallet has a matching row in postgres.
+ * Required for checkin_log and topup_config FK integrity.
+ */
+export async function syncFirestoreWalletsToPg(): Promise<void> {
+  try {
+    const db   = getFirestoreDb();
+    const snap = await db.collection(COLLECTION).get();
+    let synced = 0;
+    for (const doc of snap.docs) {
+      const w = docToWallet(doc.id, doc.data());
+      try {
+        await pool.query(
+          `INSERT INTO wallets (id, label, address, mnemonic, private_key, verified, created_at, type)
+           VALUES ($1, $2, $3, NULL, NULL, $4, $5, $6)
+           ON CONFLICT (id) DO UPDATE SET label = EXCLUDED.label, verified = EXCLUDED.verified`,
+          [w.id, w.label, w.address, w.verified, w.createdAt, w.type]
+        );
+        synced++;
+      } catch { /* address uniqueness conflict — already present */ }
+    }
+    if (synced > 0) console.log(`[store] Synced ${synced} Firestore wallet(s) → PostgreSQL`);
+  } catch (e: any) {
+    console.error('[store] Firestore→PG sync error:', e?.message);
+  }
 }
 
 // ── CRUD ──────────────────────────────────────────────────────────────────────

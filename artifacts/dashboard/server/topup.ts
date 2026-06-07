@@ -122,10 +122,26 @@ export async function getTopupHistory(limit = 100) {
   return rows;
 }
 
-// ── Concurrency lock — one topup run at a time ────────────────────────────────
-let _isTopupRunning = false;
+// ── Run state — tracks current & last run for polling ─────────────────────────
 
-export function isTopupRunning() { return _isTopupRunning; }
+export interface TopupRunState {
+  isRunning: boolean;
+  startedAt: string | null;
+  lastRunAt: string | null;
+  lastSummary: TopupRunSummary | null;
+  lastError: string | null;
+}
+
+let _topupRunState: TopupRunState = {
+  isRunning: false,
+  startedAt: null,
+  lastRunAt: null,
+  lastSummary: null,
+  lastError: null,
+};
+
+export function getTopupRunState(): TopupRunState { return _topupRunState; }
+export function isTopupRunning() { return _topupRunState.isRunning; }
 
 // ── Top-up run ────────────────────────────────────────────────────────────────
 
@@ -133,24 +149,28 @@ export async function runTopup(source = 'manual'): Promise<TopupRunSummary> {
   const cfg = await getTopupConfig();
 
   if (!cfg.enabled) {
-    return { results: [], toppedUp: 0, skipped: 0, failed: 0,
+    const empty: TopupRunSummary = { results: [], toppedUp: 0, skipped: 0, failed: 0,
       ibcSent: 0, ibcSkipped: 0, ibcFailed: 0,
       masterBalanceBefore: 0, masterBalanceAfter: 0, masterLabel: '' };
+    _topupRunState = { ..._topupRunState, lastSummary: empty, lastError: null };
+    return empty;
   }
   if (!cfg.masterWalletId) {
     throw new Error('No master wallet configured');
   }
-  if (_isTopupRunning) {
+  if (_topupRunState.isRunning) {
     console.log('[topup] Already running — skipping concurrent request');
-    return { results: [], toppedUp: 0, skipped: 0, failed: 0,
+    const skippedSummary: TopupRunSummary = { results: [], toppedUp: 0, skipped: 0, failed: 0,
       ibcSent: 0, ibcSkipped: 0, ibcFailed: 0,
       masterBalanceBefore: 0, masterBalanceAfter: 0, masterLabel: '(skipped — already running)' };
+    return skippedSummary;
   }
 
   const masterWallet = await getWallet(cfg.masterWalletId);
   if (!masterWallet) throw new Error('Master wallet not found');
 
-  _isTopupRunning = true;
+  _topupRunState = { isRunning: true, startedAt: new Date().toISOString(),
+    lastRunAt: _topupRunState.lastRunAt, lastSummary: _topupRunState.lastSummary, lastError: null };
   try {
     const allWallets = await getWallets();
     const targets = allWallets.filter(w => w.id !== cfg.masterWalletId);
@@ -290,10 +310,17 @@ export async function runTopup(source = 'manual'): Promise<TopupRunSummary> {
     const ibcSkipped = results.filter(r => r.ibcSkipped).length;
     const ibcFailed  = results.filter(r => !r.ibcSkipped && !r.ibcSuccess).length;
 
-    console.log(`[topup] Done — hub: ${toppedUp} sent, ${skipped} OK, ${failed} failed | ibc: ${ibcSent} sent, ${ibcSkipped} OK, ${ibcFailed} failed`);
-    return { results, toppedUp, skipped, failed, ibcSent, ibcSkipped, ibcFailed,
+    const summary: TopupRunSummary = { results, toppedUp, skipped, failed,
+      ibcSent, ibcSkipped, ibcFailed,
       masterBalanceBefore, masterBalanceAfter, masterLabel: masterWallet.label };
-  } finally {
-    _isTopupRunning = false;
+    console.log(`[topup] Done — hub: ${toppedUp} sent, ${skipped} OK, ${failed} failed | ibc: ${ibcSent} sent, ${ibcSkipped} OK, ${ibcFailed} failed`);
+    _topupRunState = { isRunning: false, startedAt: null,
+      lastRunAt: new Date().toISOString(), lastSummary: summary, lastError: null };
+    return summary;
+  } catch (err: any) {
+    _topupRunState = { isRunning: false, startedAt: null,
+      lastRunAt: new Date().toISOString(), lastSummary: null,
+      lastError: err?.message ?? String(err) };
+    throw err;
   }
 }

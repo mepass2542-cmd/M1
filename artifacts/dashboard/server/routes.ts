@@ -38,6 +38,8 @@ import {
   setTopupConfig,
   runTopup,
   getTopupHistory,
+  getTopupRunState,
+  isTopupRunning,
 } from './topup';
 
 export const router = Router();
@@ -281,6 +283,9 @@ router.post('/topup/config', async (req, res) => {
       thresholdUmec: number;
       topupAmountUmec: number;
       runBeforeCheckin: boolean;
+      ibcEnabled: boolean;
+      ibcThresholdUmec: number;
+      ibcAmountUmec: number;
     }>;
     res.json(await setTopupConfig(cfg));
   } catch (e: any) {
@@ -288,13 +293,15 @@ router.post('/topup/config', async (req, res) => {
   }
 });
 
-router.post('/topup/run', async (_req, res) => {
-  try {
-    const summary = await runTopup('manual');
-    res.json(summary);
-  } catch (e: any) {
-    res.status(500).json({ error: e?.message ?? 'Top-up failed' });
-  }
+router.post('/topup/run', (_req, res) => {
+  if (isTopupRunning()) return res.status(409).json({ error: 'Already running' });
+  // Fire-and-forget — client polls /topup/status for results
+  runTopup('manual').catch(e => console.error('[topup] Manual run error:', e?.message));
+  res.json({ started: true });
+});
+
+router.get('/topup/status', (_req, res) => {
+  res.json(getTopupRunState());
 });
 
 router.get('/topup/history', async (req, res) => {
