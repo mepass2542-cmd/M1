@@ -24,12 +24,6 @@ const ROLLUP_CHAIN_ID: Record<string, string> = {
   testnet: 'mecheckin_100-1',
 };
 
-const HUB_FEE = { amount: [{ denom: 'umec', amount: '12000' }], gas: '200000' };
-const ROLLUP_FEE = { amount: [] as { denom: string; amount: string }[], gas: '200000' };
-const ADDRESS_PREFIX = 'me';
-const CHECKIN_TYPE_URL = '/stchain.rollapp.checkin.MsgCheckIn';
-const FETCH_TIMEOUT_MS = 12_000;
-
 // IBC: hub channel-1 → rollup channel-0
 const IBC_HUB_CHANNEL    = 'channel-1';
 const IBC_SOURCE_PORT    = 'transfer';
@@ -37,18 +31,19 @@ const IBC_SOURCE_PORT    = 'transfer';
 export const ROLLUP_IBC_DENOM =
   'ibc/BC7F4D581D88785A22824C8FB6807DFC3B65C1764AFF1230D954AAB06B70CBC5';
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+const HUB_FEE = { amount: [{ denom: 'umec', amount: '12000' }], gas: '200000' };
+// Rollup requires IBC MEC fee (10 000 units minimum, wallets funded via IBC bridge)
+const ROLLUP_FEE = {
+  amount: [{ denom: ROLLUP_IBC_DENOM, amount: '10000' }],
+  gas: '200000',
+};
+const ADDRESS_PREFIX = 'me';
+const CHECKIN_TYPE_URL = '/stchain.rollapp.checkin.MsgCheckIn';
+const WSTAKING_CLAIM_URL = '/metaearth.wstaking.MsgWithdrawDelegatorReward';
+const WSTAKING_UNSTAKE_URL = '/metaearth.wstaking.MsgUnstake';
+const FETCH_TIMEOUT_MS = 12_000;
 
-async function fetchWithTimeout(url: string, ms = FETCH_TIMEOUT_MS): Promise<Response> {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), ms);
-  try {
-    const res = await fetch(url, { signal: ctrl.signal });
-    return res;
-  } finally {
-    clearTimeout(timer);
-  }
-}
+// ─── Protobuf type definitions ────────────────────────────────────────────────
 
 function buildMsgCheckInType(): Type {
   const root = new Root();
@@ -59,6 +54,31 @@ function buildMsgCheckInType(): Type {
   return T;
 }
 const MsgCheckInType = buildMsgCheckInType();
+
+function buildWstakingWithdrawType(): Type {
+  const root = new Root();
+  const T = new Type('MsgWstakingWithdrawDelegatorReward')
+    .add(new Field('delegatorAddress', 1, 'string'))
+    .add(new Field('validatorAddress', 2, 'string'));
+  root.add(T);
+  return T;
+}
+const MsgWstakingWithdrawType = buildWstakingWithdrawType();
+
+function buildWstakingUnstakeType(): Type {
+  const root = new Root();
+  const Coin = new Type('Coin')
+    .add(new Field('denom', 1, 'string'))
+    .add(new Field('amount', 2, 'string'));
+  root.add(Coin);
+  const T = new Type('MsgWstakingUnstake')
+    .add(new Field('stakerAddress', 1, 'string'))
+    .add(new Field('validatorAddress', 2, 'string'))
+    .add(new Field('amount', 3, 'Coin'));
+  root.add(T);
+  return T;
+}
+const MsgWstakingUnstakeType = buildWstakingUnstakeType();
 
 function encodeTxRaw(txRaw: {
   bodyBytes: Uint8Array;
@@ -71,6 +91,8 @@ function encodeTxRaw(txRaw: {
   for (const sig of txRaw.signatures ?? []) w.uint32(26).bytes(sig);
   return w.finish();
 }
+
+// ─── Signer / Client builders ─────────────────────────────────────────────────
 
 async function buildSigner(wallet: StoredWallet): Promise<OfflineSigner> {
   if (wallet.privateKey) {
@@ -85,18 +107,33 @@ async function buildSigner(wallet: StoredWallet): Promise<OfflineSigner> {
 
 async function buildHubClient(wallet: StoredWallet): Promise<SigningStargateClient> {
   const signer = await buildSigner(wallet);
-  return SigningStargateClient.connectWithSigner(HUB_RPC, signer);
+  const registry = new Registry([...defaultRegistryTypes]);
+  registry.register(WSTAKING_CLAIM_URL, MsgWstakingWithdrawType as any);
+  registry.register(WSTAKING_UNSTAKE_URL, MsgWstakingUnstakeType as any);
+  return SigningStargateClient.connectWithSigner(HUB_RPC, signer, { registry });
 }
 
 async function buildRollupClient(wallet: StoredWallet, network = 'mainnet') {
   const signer = await buildSigner(wallet);
   const rpc = ROLLUP_RPC[network] ?? ROLLUP_RPC.mainnet;
-  // Include ALL default Cosmos types (MsgSend, etc.) PLUS the custom MsgCheckIn
   const registry = new Registry([...defaultRegistryTypes]);
   registry.register(CHECKIN_TYPE_URL, MsgCheckInType as any);
   const tmClient = await Tendermint37Client.connect(rpc);
   const client = await SigningStargateClient.createWithSigner(tmClient, signer, { registry });
   return { tmClient, client };
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+async function fetchWithTimeout(url: string, ms = FETCH_TIMEOUT_MS): Promise<Response> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  try {
+    const res = await fetch(url, { signal: ctrl.signal });
+    return res;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // ─── Rollup broadcast with sequence retry ────────────────────────────────────
@@ -106,7 +143,6 @@ export interface TxResult {
   txHash?: string;
   error?: string;
   note?: string;
-  /** True when the error is permanent and retrying will not help */
   permanent?: boolean;
 }
 
@@ -148,19 +184,18 @@ async function rollupBroadcast(
         if (match) { sequence = parseInt(match[1], 10); continue; }
       }
 
-      // Permanent errors — do not retry, return immediately
-      // code 9: account does not exist on chain (never funded/registered)
-      // code 13: insufficient fees (wallet has no balance to pay fee on rollup)
+      // code 9: account not registered on rollup
       if (res.code === 9) {
         return {
           success: false, permanent: true,
-          error: `Wallet not registered on rollup chain (${wallet.address.slice(0, 16)}…) — needs funding first`,
+          error: `Wallet not registered on rollup chain (${wallet.address.slice(0, 16)}…) — fund via IBC first`,
         };
       }
+      // code 13: insufficient fee — wallet needs more IBC MEC on rollup
       if (res.code === 13) {
         return {
           success: false, permanent: true,
-          error: `Rollup requires minimum fee but wallet has no rollup balance — fund this wallet first`,
+          error: `Insufficient rollup fee — wallet needs IBC MEC on rollup (bridge MEC from hub). log: ${log}`,
         };
       }
 
@@ -205,75 +240,51 @@ export async function getRollupBalances(address: string, network = 'mainnet'): P
   }
 }
 
-export async function getStakingRewards(address: string): Promise<number> {
+// ─── Staking Queries — wstaking custom module ─────────────────────────────────
+// The hub uses metaearth.wstaking, NOT the standard cosmos staking/distribution modules.
+// Endpoints: /metaearth/wstaking/delegation/{addr} and /metaearth/wstaking/delegation-rewards/{addr}
+
+interface WstakingDelegation {
+  validatorAddress: string;
+  balanceUmec: number;
+}
+
+async function getWstakingDelegation(address: string): Promise<WstakingDelegation | null> {
   try {
-    const res = await fetchWithTimeout(
-      `${HUB_REST}/cosmos/distribution/v1beta1/delegators/${address}/rewards`
-    );
+    const res = await fetchWithTimeout(`${HUB_REST}/metaearth/wstaking/delegation/${address}`);
     const json = (await res.json()) as any;
+    if (json.code !== undefined) return null; // gRPC error
+    const delResp = json.delegation_response;
+    if (!delResp) return null;
+    return {
+      validatorAddress: delResp.delegation?.validator_address ?? '',
+      balanceUmec: parseInt(delResp.balance?.amount ?? '0', 10),
+    };
+  } catch {
+    return null;
+  }
+}
 
-    // Happy path — aggregated total is present
-    if (!json.code && Array.isArray(json.total)) {
-      const total = json.total.find((c: any) => c.denom === 'umec');
-      if (total) return Math.floor(parseFloat(total.amount));
-      // total array present but no umec entry — sum per-validator rewards in same payload
-      let sum = 0;
-      for (const v of (json.rewards ?? [])) {
-        const coin = (v.reward ?? []).find((c: any) => c.denom === 'umec');
-        if (coin) sum += parseFloat(coin.amount);
-      }
-      return Math.floor(sum);
-    }
-
-    // Aggregated endpoint returned a gRPC error (e.g. code 5 — one validator has no
-    // distribution info yet). Fall back to querying each validator individually.
-    return await getStakingRewardsPerValidator(address);
+async function getWstakingRewardsUmec(address: string): Promise<number> {
+  try {
+    const res = await fetchWithTimeout(`${HUB_REST}/metaearth/wstaking/delegation-rewards/${address}`);
+    const json = (await res.json()) as any;
+    if (json.code !== undefined) return 0;
+    const rewards: any[] = json.rewards ?? [];
+    const umec = rewards.find((r: any) => r.denom === 'umec');
+    return umec ? Math.floor(parseFloat(umec.amount)) : 0;
   } catch {
     return 0;
   }
 }
 
-async function getStakingRewardsPerValidator(address: string): Promise<number> {
-  try {
-    const delegRes = await fetchWithTimeout(
-      `${HUB_REST}/cosmos/staking/v1beta1/delegations/${address}`
-    );
-    const delegJson = (await delegRes.json()) as any;
-    const validators: string[] = (delegJson.delegation_responses ?? [])
-      .map((d: any) => d.delegation?.validator_address)
-      .filter(Boolean);
-
-    let sum = 0;
-    for (const v of validators) {
-      try {
-        const r = await fetchWithTimeout(
-          `${HUB_REST}/cosmos/distribution/v1beta1/delegators/${address}/rewards/${v}`,
-          6_000
-        );
-        const rj = (await r.json()) as any;
-        if (rj.code !== undefined) continue; // this validator has no distribution info yet
-        const coin = (rj.rewards ?? []).find((c: any) => c.denom === 'umec');
-        if (coin) sum += parseFloat(coin.amount);
-      } catch { /* skip this validator */ }
-    }
-    return Math.floor(sum);
-  } catch {
-    return 0;
-  }
+export async function getStakingRewards(address: string): Promise<number> {
+  return getWstakingRewardsUmec(address);
 }
 
 export async function getStakingDelegations(address: string): Promise<string[]> {
-  try {
-    const res = await fetchWithTimeout(
-      `${HUB_REST}/cosmos/staking/v1beta1/delegations/${address}`
-    );
-    const json = (await res.json()) as any;
-    return (json.delegation_responses ?? [])
-      .map((d: any) => d.delegation?.validator_address)
-      .filter(Boolean);
-  } catch {
-    return [];
-  }
+  const d = await getWstakingDelegation(address);
+  return d?.validatorAddress ? [d.validatorAddress] : [];
 }
 
 export interface StakingDelegation {
@@ -290,35 +301,29 @@ export interface UnbondingEntry {
 
 export async function getStakingDelegationsDetailed(address: string): Promise<StakingDelegation[]> {
   try {
-    const [delegRes, rewardsRes] = await Promise.all([
-      fetchWithTimeout(`${HUB_REST}/cosmos/staking/v1beta1/delegations/${address}`),
-      fetchWithTimeout(`${HUB_REST}/cosmos/distribution/v1beta1/delegators/${address}/rewards`),
+    const [delegation, rewardsUmec] = await Promise.all([
+      getWstakingDelegation(address),
+      getWstakingRewardsUmec(address),
     ]);
-    const delegJson = (await delegRes.json()) as any;
-    const rewardsJson = (await rewardsRes.json()) as any;
-
-    const rewardsByValidator: Record<string, number> = {};
-    for (const entry of (rewardsJson.rewards ?? [])) {
-      const coin = (entry.reward ?? []).find((c: any) => c.denom === 'umec');
-      if (coin) rewardsByValidator[entry.validator_address] = Math.floor(parseFloat(coin.amount));
-    }
-
-    return (delegJson.delegation_responses ?? []).map((d: any) => ({
-      validatorAddress: d.delegation?.validator_address ?? '',
-      stakedUmec: parseInt(d.balance?.amount ?? '0', 10),
-      pendingRewardsUmec: rewardsByValidator[d.delegation?.validator_address] ?? 0,
-    })).filter((d: StakingDelegation) => d.validatorAddress);
+    if (!delegation?.validatorAddress) return [];
+    return [{
+      validatorAddress: delegation.validatorAddress,
+      stakedUmec: delegation.balanceUmec,
+      pendingRewardsUmec: rewardsUmec,
+    }];
   } catch {
     return [];
   }
 }
 
 export async function getUnbondingDelegations(address: string): Promise<UnbondingEntry[]> {
+  // wstaking module unbonding endpoint (best-effort — chain may not expose this REST)
   try {
     const res = await fetchWithTimeout(
       `${HUB_REST}/cosmos/staking/v1beta1/delegators/${address}/unbonding_delegations`
     );
     const json = (await res.json()) as any;
+    if (json.code !== undefined) return [];
     const entries: UnbondingEntry[] = [];
     for (const ub of (json.unbonding_responses ?? [])) {
       for (const entry of (ub.entries ?? [])) {
@@ -335,6 +340,8 @@ export async function getUnbondingDelegations(address: string): Promise<Unbondin
   }
 }
 
+// ─── Hub staking operations (wstaking module) ─────────────────────────────────
+
 export async function undelegateFromValidator(
   wallet: StoredWallet,
   validatorAddress: string,
@@ -343,9 +350,9 @@ export async function undelegateFromValidator(
   try {
     const client = await buildHubClient(wallet);
     const msg = {
-      typeUrl: '/cosmos.staking.v1beta1.MsgUndelegate',
+      typeUrl: WSTAKING_UNSTAKE_URL,
       value: {
-        delegatorAddress: wallet.address,
+        stakerAddress: wallet.address,
         validatorAddress,
         amount: { denom: 'umec', amount: String(amountUmec) },
       },
@@ -371,8 +378,6 @@ export async function getAllBalances(address: string, network = 'mainnet'): Prom
     getRollupBalances(address, network),
     getStakingRewards(address),
   ]);
-  // Only count the IBC MEC denom — other rollup-native tokens use different
-  // denominations and must NOT be summed into the MEC balance display.
   const ibcMec = rollup.find(b => b.denom === ROLLUP_IBC_DENOM);
   const rollupTotal = ibcMec?.amount ?? 0;
   return { hub, rollup, rollupTotal, staking };
@@ -418,17 +423,23 @@ export async function rollupSendAll(
   network = 'mainnet'
 ): Promise<TxResult> {
   const balances = await getRollupBalances(wallet.address, network);
-  const nonZero = balances.filter(b => b.amount > 0);
-  if (nonZero.length === 0) return { success: true, note: 'No rollup balance — nothing to sweep' };
-
-  const msgs = nonZero.map(b => ({
-    typeUrl: '/cosmos.bank.v1beta1.MsgSend',
-    value: {
-      fromAddress: wallet.address,
-      toAddress: to,
-      amount: [{ denom: b.denom, amount: String(b.amount) }],
-    },
-  }));
+  // Keep enough IBC MEC for fees; send the rest
+  const fee = 10000;
+  const msgs: any[] = [];
+  for (const b of balances) {
+    if (b.amount <= 0) continue;
+    const sendAmount = b.denom === ROLLUP_IBC_DENOM ? b.amount - fee : b.amount;
+    if (sendAmount <= 0) continue;
+    msgs.push({
+      typeUrl: '/cosmos.bank.v1beta1.MsgSend',
+      value: {
+        fromAddress: wallet.address,
+        toAddress: to,
+        amount: [{ denom: b.denom, amount: String(sendAmount) }],
+      },
+    });
+  }
+  if (msgs.length === 0) return { success: true, note: 'No rollup balance to sweep (after fee reserve)' };
   return rollupBroadcast(wallet, msgs, 'Rollup sweep', network);
 }
 
@@ -457,17 +468,14 @@ export async function ibcTransferToRollup(
 ): Promise<TxResult> {
   try {
     const client = await buildHubClient(masterWallet);
-    // Timeout: 10 minutes from now in nanoseconds
     const timeoutTimestamp = BigInt(Date.now() + 10 * 60_000) * 1_000_000n;
-    // sendIbcTokens: senderAddress, recipientAddress, transferAmount, sourcePort,
-    //                sourceChannel, timeoutHeight, timeoutTimestamp, fee, memo
     const result = await (client as any).sendIbcTokens(
       masterWallet.address,
       targetAddress,
       { denom: 'umec', amount: String(amountUmec) },
       IBC_SOURCE_PORT,
       IBC_HUB_CHANNEL,
-      undefined,           // no height timeout — use timestamp only
+      undefined,
       timeoutTimestamp,
       HUB_FEE,
       'Rollup registration'
@@ -488,63 +496,17 @@ export async function withdrawStakingRewards(wallet: StoredWallet): Promise<TxRe
 
     const client = await buildHubClient(wallet);
     const msgs = validators.map(v => ({
-      typeUrl: '/cosmos.distribution.v1beta1.MsgWithdrawDelegatorReward',
+      typeUrl: WSTAKING_CLAIM_URL,
       value: { delegatorAddress: wallet.address, validatorAddress: v },
     }));
 
-    // Try all validators in one batch first (efficient)
     const result = await client.signAndBroadcast(wallet.address, msgs, HUB_FEE, '');
     if (result.code === 0) return { success: true, txHash: result.transactionHash };
 
-    const log = result.rawLog ?? '';
-
-    // "no delegation distribution info" — one or more validators haven't distributed yet.
-    // Fall back to individual per-validator withdrawals, skipping the ones with no rewards.
-    if (log.includes('no delegation distribution info')) {
-      return await withdrawStakingRewardsIndividually(wallet, validators, client);
-    }
-
-    return { success: false, error: `code ${result.code}: ${log}` };
+    return { success: false, error: `code ${result.code}: ${result.rawLog ?? ''}` };
   } catch (err: any) {
     return { success: false, error: err?.message ?? String(err) };
   }
-}
-
-async function withdrawStakingRewardsIndividually(
-  wallet: StoredWallet,
-  validators: string[],
-  client: SigningStargateClient
-): Promise<TxResult> {
-  const hashes: string[] = [];
-  let noInfoCount = 0;
-
-  for (const v of validators) {
-    try {
-      const msg = {
-        typeUrl: '/cosmos.distribution.v1beta1.MsgWithdrawDelegatorReward',
-        value: { delegatorAddress: wallet.address, validatorAddress: v },
-      };
-      const r = await client.signAndBroadcast(wallet.address, [msg], HUB_FEE, '');
-      if (r.code === 0) {
-        hashes.push(r.transactionHash);
-      } else if ((r.rawLog ?? '').includes('no delegation distribution info')) {
-        noInfoCount++;
-      }
-      // brief pause so next tx picks up incremented sequence from the chain
-      await new Promise(res => setTimeout(res, 800));
-    } catch { /* skip this validator */ }
-  }
-
-  if (hashes.length > 0) {
-    const note = noInfoCount > 0
-      ? `${noInfoCount} validator(s) had no rewards yet — skipped`
-      : undefined;
-    return { success: true, txHash: hashes[0], note };
-  }
-  if (noInfoCount === validators.length) {
-    return { success: true, note: 'No rewards to withdraw yet — validators have not distributed any rewards' };
-  }
-  return { success: false, error: 'All per-validator reward withdrawals failed' };
 }
 
 export type SweepMode = 'all' | 'hub' | 'rollup' | 'staking';
@@ -568,19 +530,16 @@ export async function autoSweep(
   const push = (step: string, r: TxResult) => results.push({ step, ...r });
   const TXN_FEE = 12000;
 
-  // ── Staking-only ──────────────────────────────────────────────────────────
   if (mode === 'staking') {
     push('Withdraw Staking Rewards', await withdrawStakingRewards(wallet));
     return results;
   }
 
-  // ── Rollup-only ───────────────────────────────────────────────────────────
   if (mode === 'rollup') {
     push('Sweep Rollup Balance', await rollupSendAll(wallet, destination, network));
     return results;
   }
 
-  // ── Hub-only ──────────────────────────────────────────────────────────────
   if (mode === 'hub') {
     const hubBalance = await getHubBalance(wallet.address);
     const available = hubBalance - minHubReserveUmec - TXN_FEE;
@@ -596,21 +555,13 @@ export async function autoSweep(
   }
 
   // ── All-inclusive: 3-step sequential sweep ────────────────────────────────
-  //
-  // Step 1: Withdraw staking rewards
-  //   Always attempts withdrawal if delegations exist — does NOT gate on the
-  //   reported reward amount because the hub's rewards query API is unreliable
-  //   (returns code 13 runtime error). The on-chain execution works regardless.
-  //
   const validators = await getStakingDelegations(wallet.address);
   if (validators.length > 0) {
     push('Withdraw Staking Rewards', await withdrawStakingRewards(wallet));
-    // Staking rewards have now landed in hub wallet (signAndBroadcast waits for block)
   } else {
     push('Withdraw Staking Rewards', { success: true, note: 'No staking delegations on this wallet' });
   }
 
-  // Step 2: Sweep hub — re-query AFTER reward withdrawal so balance includes landed rewards
   const hubBalance = await getHubBalance(wallet.address);
   const available = hubBalance - minHubReserveUmec - TXN_FEE;
   if (available > 0) {
@@ -622,7 +573,6 @@ export async function autoSweep(
     });
   }
 
-  // Step 3: Sweep rollup (separate chain — runs independently of hub steps)
   push('Sweep Rollup Balance', await rollupSendAll(wallet, destination, network));
 
   return results;

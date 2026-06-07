@@ -1,34 +1,48 @@
 ---
 name: Meta Earth check-in mechanism
-description: How the daily check-in works on the Meta Earth rollup — fee model, sequence handling, broadcast mode, and what NOT to do.
+description: How the daily check-in works on the Meta Earth rollup — fee model, sequence handling, broadcast mode, staking module, and what NOT to do.
 ---
 
 # Meta Earth Check-in Mechanism
 
-**Rule:** Daily check-in is `MsgCheckIn` (`/stchain.rollapp.checkin.MsgCheckIn`) on the rollup chain `mecheckin_101-1` via RPC `http://118.175.0.247:23011`. Use zero fees (empty amount array). No IBC bridging needed.
+**Rule:** Daily check-in is `MsgCheckIn` (`/stchain.rollapp.checkin.MsgCheckIn`) on the rollup chain `mecheckin_101-1` via RPC `http://118.175.0.247:23011`. Fee is **10 000 units of IBC MEC** on the rollup — NOT empty.
 
-**Why:** The rollup's minimum gas price (`0.001 umec`) is not enforced — transactions with an empty fee array are accepted. The IBC relayer between me-hub and the rollup has never relayed a packet (both hub channels show next_sequence_receive=1). Attempting to bridge MEC via IBC wastes hub funds. Confirmed working with TX `731C36E75FDF887EE235F16332024CEA864C4E79DB94AD3AC44A2491B3D8A5CF`.
+**Why:** The rollup previously accepted zero-fee txs, but now enforces a minimum fee. Wallets hold IBC MEC (`ibc/BC7F4D581D88785A22824C8FB6807DFC3B65C1764AFF1230D954AAB06B70CBC5`) on the rollup which pays for fees. Using empty fee returns code 13.
 
 **How to apply:**
-- Fee: `{ amount: [], gas: '200000' }`
+- Fee: `{ amount: [{ denom: ROLLUP_IBC_DENOM, amount: '10000' }], gas: '200000' }`
 - Use `Tendermint37Client.connect(rpcUrl)` + `SigningStargateClient.createWithSigner(tmClient, signer, { registry })`
 - Use `tmClient.broadcastTxSync({ tx: txBytes })` — NOT `client.broadcastTx()` which waits for block commit and hangs 30s+
 - Sequence mismatch (code 32): parse `expected (\d+)` from the error log and retry — `getSequence` returns committed state but mempool may have pending txs ahead of it. Retry up to 3 times.
-- MsgCheckIn fields: `checkInAddress` (field 1, string) and `checkInMessage` (field 2, string, default `"META EARTH! ME, My Way!"`)
+- MsgCheckIn fields: `checkInAddress` (field 1, string) and `checkInMessage` (field 2, string)
+- When sweeping rollup balance, reserve 10 000 IBC MEC for fees (don't send all)
 
-**What NOT to do:**
-- Do NOT use `client.broadcastTx()` (commit mode) — it times out on this rollup.
-- Do NOT use the me-hub chain for check-ins — check-ins live on the rollup only.
-- Do NOT assume `getSequence()` reflects mempool state — it only reflects committed blocks.
+## wstaking Custom Module (Hub staking — NOT standard cosmos staking)
+
+The me-hub uses `metaearth.wstaking`, NOT `cosmos.staking.v1beta1` or `cosmos.distribution.v1beta1`.
+Standard Cosmos staking endpoints return 0 / code 13 runtime error.
+
+**REST endpoints:**
+- `GET /metaearth/wstaking/delegation/{address}` → `delegation_response.balance.amount` (umec, as string)
+  - Also contains `delegation_response.delegation.validator_address`
+- `GET /metaearth/wstaking/delegation-rewards/{address}` → `rewards[0].amount` (float string umec)
+- One delegation per wallet (single validator, not multiple)
+
+**Transaction type URLs (protobuf registry):**
+- Claim rewards: `/metaearth.wstaking.MsgWithdrawDelegatorReward`
+  - Fields: `delegatorAddress` (string, field 1), `validatorAddress` (string, field 2)
+- Unstake: `/metaearth.wstaking.MsgUnstake`
+  - Fields: `stakerAddress` (string, field 1), `validatorAddress` (string, field 2), `amount` (Coin, field 3)
+- These must be registered in the cosmjs `Registry` before signing
+
+**Hub hub client must include wstaking types in its registry** — `SigningStargateClient.connectWithSigner(HUB_RPC, signer, { registry })` where registry has `/metaearth.wstaking.*` types registered.
 
 ## IBC channel (confirmed STATE_OPEN)
 - Hub `channel-1` (port: transfer) ↔ Rollup `channel-0` (port: transfer)
 - IBC denom of hub MEC on rollup: `ibc/BC7F4D581D88785A22824C8FB6807DFC3B65C1764AFF1230D954AAB06B70CBC5`
-- Use `client.sendIbcTokens(sender, receiver, coin, 'transfer', 'channel-1', undefined, timeoutTimestampNs, HUB_FEE)` 
-- Wallets with code 9 (no rollup account) or code 13 (no rollup balance) need IBC funding before they can check in.
-- IBC transfer is a `hub` side tx (pays 12000 umec hub fee); the relayer forwards the packet to the rollup.
+- Use `client.sendIbcTokens(sender, receiver, coin, 'transfer', 'channel-1', undefined, timeoutTimestampNs, HUB_FEE)`
 
 ## Chain topology (mainnet 118.175.0.247)
 - Port 23011 (RPC) / 23013 (REST): rollup `mecheckin_101-1`, prefix `me` — where MsgCheckIn is submitted
-- Port 16657 (RPC) / 11317 (REST): me-hub `me-chain`, prefix `me` — holds wallet umec balance; IBC channel-1 confirmed open
-- Port 26657 (RPC) / 1317 (REST): `gc_20-1` chain, prefix `gc` — separate chain, unrelated to daily check-in
+- Port 16657 (RPC) / 11317 (REST): me-hub, prefix `me` — holds wallet umec balance; staking via wstaking module
+- Port 26657 / 1317: `gc_20-1` chain — unrelated to daily check-in or hub staking
