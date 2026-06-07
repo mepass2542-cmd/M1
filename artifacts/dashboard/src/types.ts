@@ -95,6 +95,30 @@ export interface CheckinLogEntry {
   error: string | null;
 }
 
+// ── Staking types ────────────────────────────────────────────────────────────
+
+export interface StakingDelegation {
+  validatorAddress: string;
+  stakedUmec: number;
+  pendingRewardsUmec: number;
+}
+
+export interface UnbondingEntry {
+  validatorAddress: string;
+  completionTime: string;
+  amountUmec: number;
+}
+
+export interface WalletStakingInfo {
+  id: string;
+  label: string;
+  address: string;
+  delegations: StakingDelegation[];
+  unbonding: UnbondingEntry[];
+  totalStakedUmec: number;
+  totalRewardsUmec: number;
+}
+
 // ── Top-Up types ─────────────────────────────────────────────────────────────
 
 export interface TopupConfig {

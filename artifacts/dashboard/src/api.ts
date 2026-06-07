@@ -2,6 +2,7 @@ import type {
   Wallet, BalanceEntry, CheckInResult, SweepWalletResult, SweepMode, TxResult,
   SchedulerState, WalletCheckinStats, CheckinLogEntry,
   TopupConfig, TopupRunSummary, TopupLogEntry,
+  WalletStakingInfo,
 } from './types';
 
 async function request<T>(url: string, init?: RequestInit & { headers?: Record<string, string> }): Promise<T> {
@@ -90,6 +91,22 @@ export const api = {
     request<SweepWalletResult[]>('/api/sweep', {
       method: 'POST',
       body: JSON.stringify(params),
+    }),
+
+  // Staking
+  getStaking: (walletId: string) =>
+    request<WalletStakingInfo>(`/api/staking/${walletId}`),
+
+  claimRewards: (walletId: string) =>
+    request<TxResult>('/api/staking/claim', {
+      method: 'POST',
+      body: JSON.stringify({ walletId }),
+    }),
+
+  undelegate: (walletId: string, validatorAddress: string, amountUmec: number) =>
+    request<TxResult>('/api/staking/undelegate', {
+      method: 'POST',
+      body: JSON.stringify({ walletId, validatorAddress, amountUmec }),
     }),
 
   // Export

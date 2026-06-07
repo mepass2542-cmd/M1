@@ -276,6 +276,88 @@ export async function getStakingDelegations(address: string): Promise<string[]> 
   }
 }
 
+export interface StakingDelegation {
+  validatorAddress: string;
+  stakedUmec: number;
+  pendingRewardsUmec: number;
+}
+
+export interface UnbondingEntry {
+  validatorAddress: string;
+  completionTime: string;
+  amountUmec: number;
+}
+
+export async function getStakingDelegationsDetailed(address: string): Promise<StakingDelegation[]> {
+  try {
+    const [delegRes, rewardsRes] = await Promise.all([
+      fetchWithTimeout(`${HUB_REST}/cosmos/staking/v1beta1/delegations/${address}`),
+      fetchWithTimeout(`${HUB_REST}/cosmos/distribution/v1beta1/delegators/${address}/rewards`),
+    ]);
+    const delegJson = (await delegRes.json()) as any;
+    const rewardsJson = (await rewardsRes.json()) as any;
+
+    const rewardsByValidator: Record<string, number> = {};
+    for (const entry of (rewardsJson.rewards ?? [])) {
+      const coin = (entry.reward ?? []).find((c: any) => c.denom === 'umec');
+      if (coin) rewardsByValidator[entry.validator_address] = Math.floor(parseFloat(coin.amount));
+    }
+
+    return (delegJson.delegation_responses ?? []).map((d: any) => ({
+      validatorAddress: d.delegation?.validator_address ?? '',
+      stakedUmec: parseInt(d.balance?.amount ?? '0', 10),
+      pendingRewardsUmec: rewardsByValidator[d.delegation?.validator_address] ?? 0,
+    })).filter((d: StakingDelegation) => d.validatorAddress);
+  } catch {
+    return [];
+  }
+}
+
+export async function getUnbondingDelegations(address: string): Promise<UnbondingEntry[]> {
+  try {
+    const res = await fetchWithTimeout(
+      `${HUB_REST}/cosmos/staking/v1beta1/delegators/${address}/unbonding_delegations`
+    );
+    const json = (await res.json()) as any;
+    const entries: UnbondingEntry[] = [];
+    for (const ub of (json.unbonding_responses ?? [])) {
+      for (const entry of (ub.entries ?? [])) {
+        entries.push({
+          validatorAddress: ub.validator_address,
+          completionTime: entry.completion_time,
+          amountUmec: parseInt(entry.balance ?? '0', 10),
+        });
+      }
+    }
+    return entries;
+  } catch {
+    return [];
+  }
+}
+
+export async function undelegateFromValidator(
+  wallet: StoredWallet,
+  validatorAddress: string,
+  amountUmec: number
+): Promise<TxResult> {
+  try {
+    const client = await buildHubClient(wallet);
+    const msg = {
+      typeUrl: '/cosmos.staking.v1beta1.MsgUndelegate',
+      value: {
+        delegatorAddress: wallet.address,
+        validatorAddress,
+        amount: { denom: 'umec', amount: String(amountUmec) },
+      },
+    };
+    const result = await client.signAndBroadcast(wallet.address, [msg], HUB_FEE, '');
+    if (result.code !== 0) return { success: false, error: `code ${result.code}: ${result.rawLog}` };
+    return { success: true, txHash: result.transactionHash };
+  } catch (err: any) {
+    return { success: false, error: err?.message ?? String(err) };
+  }
+}
+
 export interface WalletBalances {
   hub: number;       // umec
   rollup: Coin[];    // each coin in smallest unit

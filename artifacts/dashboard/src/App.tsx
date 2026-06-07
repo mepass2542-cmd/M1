@@ -4,6 +4,7 @@ import { WalletsTab } from './components/WalletsTab';
 import { CheckInTab } from './components/CheckInTab';
 import { TransferTab } from './components/TransferTab';
 import { SweepTab } from './components/SweepTab';
+import { StakingTab } from './components/StakingTab';
 import { ExportTab } from './components/ExportTab';
 import { TopUpTab } from './components/TopUpTab';
 
@@ -29,6 +30,7 @@ const TABS = [
   { id: 'topup',   label: '💰 Top-Up' },
   { id: 'transfer', label: '💸 Transfer' },
   { id: 'sweep', label: '🔄 Auto-Sweep' },
+  { id: 'staking', label: '🏆 Staking' },
   { id: 'export', label: '📤 Export' },
 ] as const;
 
@@ -85,6 +87,7 @@ export default function App() {
           {tab === 'topup'    && <TopUpTab />}
           {tab === 'transfer' && <TransferTab />}
           {tab === 'sweep'    && <SweepTab />}
+          {tab === 'staking'  && <StakingTab />}
           {tab === 'export'   && <ExportTab />}
         </main>
       </div>

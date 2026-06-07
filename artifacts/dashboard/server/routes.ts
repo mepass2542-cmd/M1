@@ -13,12 +13,15 @@ import {
   getHubBalance,
   getRollupBalances,
   getStakingDelegations,
+  getStakingDelegationsDetailed,
+  getUnbondingDelegations,
   getStakingRewards,
   performCheckin,
   hubSend,
   rollupSendAll,
   rollupSendAmount,
   withdrawStakingRewards,
+  undelegateFromValidator,
   autoSweep,
   SweepMode,
 } from './blockchain';
@@ -289,6 +292,65 @@ router.get('/topup/history', async (req, res) => {
     res.json(await getTopupHistory(limit));
   } catch (e: any) {
     res.status(500).json({ error: e?.message ?? 'History query failed' });
+  }
+});
+
+// ─── Staking ─────────────────────────────────────────────────────────────────
+
+router.get('/staking/:walletId', async (req, res) => {
+  try {
+    const wallet = await getWallet(req.params.walletId);
+    if (!wallet) return res.status(404).json({ error: 'Wallet not found' });
+    const [delegations, unbonding] = await Promise.all([
+      getStakingDelegationsDetailed(wallet.address),
+      getUnbondingDelegations(wallet.address),
+    ]);
+    const totalStakedUmec = delegations.reduce((s, d) => s + d.stakedUmec, 0);
+    const totalRewardsUmec = delegations.reduce((s, d) => s + d.pendingRewardsUmec, 0);
+    res.json({
+      id: wallet.id,
+      label: wallet.label,
+      address: wallet.address,
+      delegations,
+      unbonding,
+      totalStakedUmec,
+      totalRewardsUmec,
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message ?? 'Staking info fetch failed' });
+  }
+});
+
+router.post('/staking/claim', async (req, res) => {
+  try {
+    const { walletId } = req.body as { walletId: string };
+    const wallet = await getWallet(walletId);
+    if (!wallet) return res.status(404).json({ error: 'Wallet not found' });
+    if (!wallet.mnemonic && !wallet.privateKey) return res.status(400).json({ error: 'Wallet has no credentials' });
+    const result = await withdrawStakingRewards(wallet);
+    res.json(result);
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message ?? 'Claim failed' });
+  }
+});
+
+router.post('/staking/undelegate', async (req, res) => {
+  try {
+    const { walletId, validatorAddress, amountUmec } = req.body as {
+      walletId: string;
+      validatorAddress: string;
+      amountUmec: number;
+    };
+    if (!walletId || !validatorAddress || !amountUmec) {
+      return res.status(400).json({ error: 'walletId, validatorAddress, and amountUmec are required' });
+    }
+    const wallet = await getWallet(walletId);
+    if (!wallet) return res.status(404).json({ error: 'Wallet not found' });
+    if (!wallet.mnemonic && !wallet.privateKey) return res.status(400).json({ error: 'Wallet has no credentials' });
+    const result = await undelegateFromValidator(wallet, validatorAddress, amountUmec);
+    res.json(result);
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message ?? 'Undelegate failed' });
   }
 });
 
