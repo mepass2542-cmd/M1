@@ -6,6 +6,23 @@ let _initialised = false;
 export function ensureAdmin(): void {
   if (_initialised) return;
   _initialised = true;
+
+  const saJson = process.env.FIREBASE_SERVICE_ACCOUNT;
+  if (saJson) {
+    try {
+      const serviceAccount = JSON.parse(saJson);
+      admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount),
+      });
+      console.log('[auth] Firebase Admin initialised with service account');
+      return;
+    } catch (e) {
+      console.error('[auth] Failed to parse FIREBASE_SERVICE_ACCOUNT JSON:', e);
+    }
+  }
+
+  // Fallback: projectId-only (works for token verification but NOT Firestore)
+  console.warn('[auth] No FIREBASE_SERVICE_ACCOUNT found — falling back to projectId-only init (Firestore unavailable)');
   admin.initializeApp({
     projectId: process.env.FIREBASE_PROJECT_ID ?? 'meta-earth-dashboard',
   });
