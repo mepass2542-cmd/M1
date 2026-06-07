@@ -11,11 +11,6 @@ export function ensureAdmin(): void {
   if (saJson) {
     try {
       const serviceAccount = JSON.parse(saJson);
-      // Replit secrets can double-escape \n in the private key, making the RSA
-      // key invalid even though JSON.parse succeeds. Repair it here.
-      if (typeof serviceAccount.private_key === 'string') {
-        serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
-      }
       admin.initializeApp({
         credential: admin.credential.cert(serviceAccount),
       });
