@@ -416,11 +416,11 @@ export async function hubSend(
   }
 }
 
-// Minimum sendable rollup amount = 0.01 MEC = 10 000 smallest units
-// Fee reservation = 10 000 (kept for future check-in fees)
-// So we only sweep if sendable balance (after fee reservation) >= ROLLUP_MIN_SEND
+// Fee reservation = 10 000 units (kept to cover the sweep tx fee)
+// Minimum *sendable* amount after fee reservation = 1 000 units (0.001 MEC) — avoids dust txs
+// Total balance must therefore exceed 11 000 units (0.011 MEC) to trigger a sweep
 const ROLLUP_FEE_RESERVE = 10_000;
-const ROLLUP_MIN_SEND    = 10_000;
+const ROLLUP_MIN_SEND    =  1_000;
 
 export async function rollupSendAll(
   wallet: StoredWallet,
@@ -458,12 +458,14 @@ export async function rollupSendAll(
     });
   }
 
-  // Confirmed low balance — include actual amount so user can see what was checked
+  // Confirmed low balance — show both queried total and sendable amount for clarity
   if (msgs.length === 0) {
-    const mecDisplay = (ibcAmount / 1_000_000).toFixed(4);
+    const totalDisplay   = (ibcAmount / 1_000_000).toFixed(4);
+    const sendable       = Math.max(0, ibcAmount - ROLLUP_FEE_RESERVE);
+    const sendableDisplay = (sendable / 1_000_000).toFixed(4);
     return {
       success: true,
-      note: `Rollup IBC MEC balance ${mecDisplay} MEC (${ibcAmount} units) is below 0.01 MEC minimum after fee reserve — skipped`,
+      note: `Rollup balance ${totalDisplay} MEC queried; sendable after fee reserve: ${sendableDisplay} MEC (${sendable} units) — below 0.001 MEC dust threshold, skipped`,
     };
   }
 
@@ -471,10 +473,10 @@ export async function rollupSendAll(
 
   // code 5 = chain confirms insufficient funds (balance may be slightly stale) — skip gracefully
   if (!result.success && result.error?.includes('insufficient funds')) {
-    const mecDisplay = (ibcAmount / 1_000_000).toFixed(4);
+    const totalDisplay = (ibcAmount / 1_000_000).toFixed(4);
     return {
       success: true,
-      note: `Rollup sweep skipped — on-chain balance (${mecDisplay} MEC queried) insufficient after fees`,
+      note: `Rollup sweep skipped — on-chain balance (${totalDisplay} MEC REST-queried) insufficient; chain may have a stale view`,
     };
   }
 
