@@ -2,6 +2,7 @@ import cron from 'node-cron';
 import { pool } from './db';
 import { getWallets } from './store';
 import { performCheckin } from './blockchain';
+import { getTopupConfig, runTopup } from './topup';
 
 const NETWORK  = process.env.NETWORK ?? 'mainnet';
 const CRON_EXPR = process.env.CRON_SCHEDULE ?? '0 9 * * *';
@@ -136,6 +137,23 @@ export async function runAllCheckins(source = 'cron'): Promise<RunResult[]> {
       console.log('[scheduler] No wallets in DB — nothing to do');
       return [];
     }
+
+    // ── Pre-flight: top up low-balance wallets before check-ins ──────────
+    try {
+      const topupCfg = await getTopupConfig();
+      if (topupCfg.enabled && topupCfg.masterWalletId && topupCfg.runBeforeCheckin) {
+        console.log(`[scheduler] Running auto top-up before check-ins…`);
+        const summary = await runTopup('pre-checkin');
+        if (summary.toppedUp > 0) {
+          console.log(`[scheduler] Top-up done: ${summary.toppedUp} wallets topped up, ${summary.skipped} already OK, ${summary.failed} failed`);
+        } else {
+          console.log(`[scheduler] Top-up: all ${summary.skipped} wallets already have sufficient balance`);
+        }
+      }
+    } catch (topupErr: any) {
+      console.error('[scheduler] Top-up pre-flight error (continuing with check-ins):', topupErr?.message);
+    }
+
     console.log(`[scheduler] ${source}: checking in ${wallets.length} wallet(s)`);
 
     for (const wallet of wallets) {

@@ -94,3 +94,47 @@ export interface CheckinLogEntry {
   tx_hash: string | null;
   error: string | null;
 }
+
+// ── Top-Up types ─────────────────────────────────────────────────────────────
+
+export interface TopupConfig {
+  enabled: boolean;
+  masterWalletId: string | null;
+  thresholdUmec: number;
+  topupAmountUmec: number;
+  runBeforeCheckin: boolean;
+}
+
+export interface TopupResult {
+  walletId: string;
+  label: string;
+  address: string;
+  balanceBefore: number;
+  success: boolean;
+  txHash?: string;
+  error?: string;
+  skipped?: boolean;
+  isMaster?: boolean;
+}
+
+export interface TopupRunSummary {
+  results: TopupResult[];
+  toppedUp: number;
+  skipped: number;
+  failed: number;
+  masterBalanceBefore: number;
+  masterBalanceAfter: number;
+  masterLabel: string;
+}
+
+export interface TopupLogEntry {
+  id: number;
+  wallet_id: string;
+  wallet_label: string;
+  executed_at: string;
+  success: boolean;
+  tx_hash: string | null;
+  error: string | null;
+  amount_umec: number;
+  balance_before: number;
+}

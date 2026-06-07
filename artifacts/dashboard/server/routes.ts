@@ -28,6 +28,12 @@ import {
   getCheckinHistory,
   getAllWalletStats,
 } from './scheduler';
+import {
+  getTopupConfig,
+  setTopupConfig,
+  runTopup,
+  getTopupHistory,
+} from './topup';
 
 export const router = Router();
 
@@ -240,6 +246,49 @@ router.get('/checkin/stats', async (_req, res) => {
     res.json(await getAllWalletStats());
   } catch (e: any) {
     res.status(500).json({ error: e?.message ?? 'Stats query failed' });
+  }
+});
+
+// ─── Top-Up ───────────────────────────────────────────────────────────────────
+
+router.get('/topup/config', async (_req, res) => {
+  try {
+    res.json(await getTopupConfig());
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message ?? 'Failed to load top-up config' });
+  }
+});
+
+router.post('/topup/config', async (req, res) => {
+  try {
+    const cfg = req.body as Partial<{
+      enabled: boolean;
+      masterWalletId: string | null;
+      thresholdUmec: number;
+      topupAmountUmec: number;
+      runBeforeCheckin: boolean;
+    }>;
+    res.json(await setTopupConfig(cfg));
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message ?? 'Failed to save top-up config' });
+  }
+});
+
+router.post('/topup/run', async (_req, res) => {
+  try {
+    const summary = await runTopup('manual');
+    res.json(summary);
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message ?? 'Top-up failed' });
+  }
+});
+
+router.get('/topup/history', async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(String(req.query.limit ?? '100'), 10), 500);
+    res.json(await getTopupHistory(limit));
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message ?? 'History query failed' });
   }
 });
 

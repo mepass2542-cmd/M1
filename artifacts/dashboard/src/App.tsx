@@ -5,6 +5,7 @@ import { CheckInTab } from './components/CheckInTab';
 import { TransferTab } from './components/TransferTab';
 import { SweepTab } from './components/SweepTab';
 import { ExportTab } from './components/ExportTab';
+import { TopUpTab } from './components/TopUpTab';
 
 export interface AppState {
   wallets: Wallet[];
@@ -25,6 +26,7 @@ export const useApp = () => useContext(AppCtx);
 const TABS = [
   { id: 'wallets', label: '💼 Wallets' },
   { id: 'checkin', label: '✅ Check-In' },
+  { id: 'topup',   label: '💰 Top-Up' },
   { id: 'transfer', label: '💸 Transfer' },
   { id: 'sweep', label: '🔄 Auto-Sweep' },
   { id: 'export', label: '📤 Export' },
@@ -78,11 +80,12 @@ export default function App() {
 
         {/* Content */}
         <main className="flex-1 overflow-auto p-6">
-          {tab === 'wallets' && <WalletsTab />}
-          {tab === 'checkin' && <CheckInTab />}
+          {tab === 'wallets'  && <WalletsTab />}
+          {tab === 'checkin'  && <CheckInTab />}
+          {tab === 'topup'    && <TopUpTab />}
           {tab === 'transfer' && <TransferTab />}
-          {tab === 'sweep' && <SweepTab />}
-          {tab === 'export' && <ExportTab />}
+          {tab === 'sweep'    && <SweepTab />}
+          {tab === 'export'   && <ExportTab />}
         </main>
       </div>
     </AppCtx.Provider>

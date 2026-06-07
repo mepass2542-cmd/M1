@@ -1,6 +1,7 @@
 import type {
   Wallet, BalanceEntry, CheckInResult, SweepWalletResult, SweepMode, TxResult,
   SchedulerState, WalletCheckinStats, CheckinLogEntry,
+  TopupConfig, TopupRunSummary, TopupLogEntry,
 } from './types';
 
 async function request<T>(url: string, init?: RequestInit & { headers?: Record<string, string> }): Promise<T> {
@@ -94,4 +95,15 @@ export const api = {
   // Export
   exportUrl: (format: 'csv' | 'json', category: 'all' | 'verified' | 'unverified') =>
     `/api/export?format=${format}&category=${category}`,
+
+  // Top-Up
+  getTopupConfig: () => request<TopupConfig>('/api/topup/config'),
+  setTopupConfig: (cfg: Partial<TopupConfig>) =>
+    request<TopupConfig>('/api/topup/config', {
+      method: 'POST',
+      body: JSON.stringify(cfg),
+    }),
+  runTopup: () => request<TopupRunSummary>('/api/topup/run', { method: 'POST' }),
+  getTopupHistory: (limit = 100) =>
+    request<TopupLogEntry[]>(`/api/topup/history?limit=${limit}`),
 };
