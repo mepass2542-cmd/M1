@@ -99,6 +99,8 @@ export interface TxResult {
   txHash?: string;
   error?: string;
   note?: string;
+  /** True when the error is permanent and retrying will not help */
+  permanent?: boolean;
 }
 
 async function rollupBroadcast(
@@ -132,10 +134,29 @@ async function rollupBroadcast(
       if (res.code === 0) return { success: true, txHash };
 
       const log = res.log ?? '';
+
+      // Sequence mismatch — parse expected sequence and retry immediately
       if (res.code === 32) {
         const match = log.match(/expected (\d+)/);
         if (match) { sequence = parseInt(match[1], 10); continue; }
       }
+
+      // Permanent errors — do not retry, return immediately
+      // code 9: account does not exist on chain (never funded/registered)
+      // code 13: insufficient fees (wallet has no balance to pay fee on rollup)
+      if (res.code === 9) {
+        return {
+          success: false, permanent: true,
+          error: `Wallet not registered on rollup chain (${wallet.address.slice(0, 16)}…) — needs funding first`,
+        };
+      }
+      if (res.code === 13) {
+        return {
+          success: false, permanent: true,
+          error: `Rollup requires minimum fee but wallet has no rollup balance — fund this wallet first`,
+        };
+      }
+
       return { success: false, error: `code ${res.code}: ${log}` };
     }
     return { success: false, error: 'Sequence retry limit exceeded' };

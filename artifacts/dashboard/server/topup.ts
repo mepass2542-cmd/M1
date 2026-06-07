@@ -101,6 +101,11 @@ export interface TopupRunSummary {
   masterLabel: string;
 }
 
+// ── Concurrency lock — one topup run at a time ────────────────────────────────
+let _isTopupRunning = false;
+
+export function isTopupRunning() { return _isTopupRunning; }
+
 export async function runTopup(source = 'manual'): Promise<TopupRunSummary> {
   const cfg = await getTopupConfig();
 
@@ -112,72 +117,102 @@ export async function runTopup(source = 'manual'): Promise<TopupRunSummary> {
     throw new Error('No master wallet configured');
   }
 
+  if (_isTopupRunning) {
+    console.log('[topup] Already running — skipping concurrent request');
+    return { results: [], toppedUp: 0, skipped: 0, failed: 0,
+      masterBalanceBefore: 0, masterBalanceAfter: 0, masterLabel: '(skipped — already running)' };
+  }
+
   const masterWallet = await getWallet(cfg.masterWalletId);
   if (!masterWallet) throw new Error('Master wallet not found');
 
-  const allWallets = await getWallets();
-  const targets = allWallets.filter(w => w.id !== cfg.masterWalletId);
+  _isTopupRunning = true;
+  try {
+    const allWallets = await getWallets();
+    const targets = allWallets.filter(w => w.id !== cfg.masterWalletId);
 
-  console.log(`[topup] ${source}: checking ${targets.length} wallets (threshold ${cfg.thresholdUmec} umec)`);
+    console.log(`[topup] ${source}: checking ${targets.length} wallets in parallel (threshold ${cfg.thresholdUmec} umec)`);
 
-  const masterBalanceBefore = await getHubBalance(masterWallet.address);
-  console.log(`[topup] Master wallet (${masterWallet.label}) balance: ${masterBalanceBefore} umec`);
+    // ── Parallel balance check (all wallets at once, 5s timeout each) ────────
+    const masterBalancePromise = getHubBalance(masterWallet.address);
+    const balanceMap = new Map<string, number>();
+    await Promise.all(
+      targets.map(async w => {
+        const bal = await getHubBalance(w.address);
+        balanceMap.set(w.id, bal);
+      })
+    );
+    const masterBalanceBefore = await masterBalancePromise;
+    console.log(`[topup] Master wallet (${masterWallet.label}) balance: ${masterBalanceBefore} umec`);
 
-  const results: TopupResult[] = [];
-  // Fee cost per send = 12000 umec
-  const SEND_FEE = 12000;
+    const needsTopup = targets.filter(w => (balanceMap.get(w.id) ?? 0) < cfg.thresholdUmec);
+    const alreadyOk  = targets.filter(w => (balanceMap.get(w.id) ?? 0) >= cfg.thresholdUmec);
 
-  for (const wallet of targets) {
-    const balance = await getHubBalance(wallet.address);
+    console.log(`[topup] ${needsTopup.length} need top-up, ${alreadyOk.length} already OK`);
 
-    if (balance >= cfg.thresholdUmec) {
+    const results: TopupResult[] = [];
+
+    // Mark already-OK wallets as skipped
+    for (const w of alreadyOk) {
+      results.push({
+        walletId: w.id, label: w.label, address: w.address,
+        balanceBefore: balanceMap.get(w.id) ?? 0, success: true, skipped: true,
+      });
+    }
+
+    // Fee cost per send = 12000 umec
+    const SEND_FEE = 12000;
+    // Track running master balance to avoid re-querying chain every iteration
+    let masterRunningBalance = masterBalanceBefore;
+
+    // ── Sequential sends to low-balance wallets ───────────────────────────────
+    for (const wallet of needsTopup) {
+      const balance = balanceMap.get(wallet.id) ?? 0;
+
+      // Check master has enough to send (use running balance, not re-queried)
+      const needed = cfg.topupAmountUmec + SEND_FEE;
+      if (masterRunningBalance < needed) {
+        const err = `Master wallet insufficient: ${masterRunningBalance} umec < ${needed} needed`;
+        console.log(`[topup] ❌ ${wallet.label}: ${err}`);
+        results.push({
+          walletId: wallet.id, label: wallet.label, address: wallet.address,
+          balanceBefore: balance, success: false, error: err,
+        });
+        continue;
+      }
+
+      console.log(`[topup] Sending ${cfg.topupAmountUmec} umec → ${wallet.label} (had ${balance} umec)`);
+      const tx = await hubSend(masterWallet, wallet.address, cfg.topupAmountUmec);
+
+      if (tx.success) {
+        // Deduct from running balance (actual send + fee)
+        masterRunningBalance -= cfg.topupAmountUmec + SEND_FEE;
+        console.log(`[topup] ✅ ${wallet.label}: ${tx.txHash?.slice(0, 12)}`);
+      } else {
+        console.log(`[topup] ❌ ${wallet.label}: ${tx.error}`);
+      }
+
+      try {
+        await logTopup(wallet.id, wallet.label, cfg.topupAmountUmec, balance, tx.success, tx.txHash, tx.error);
+      } catch { /* don't crash on log failure */ }
+
       results.push({
         walletId: wallet.id, label: wallet.label, address: wallet.address,
-        balanceBefore: balance, success: true, skipped: true,
+        balanceBefore: balance, success: tx.success, txHash: tx.txHash, error: tx.error,
       });
-      continue;
+
+      // Small delay between sends to let node propagate
+      await new Promise(r => setTimeout(r, 600));
     }
 
-    // Check master has enough to send
-    const masterNow = await getHubBalance(masterWallet.address);
-    const needed = cfg.topupAmountUmec + SEND_FEE;
-    if (masterNow < needed) {
-      const err = `Master wallet insufficient: ${masterNow} umec < ${needed} needed`;
-      console.log(`[topup] ❌ ${wallet.label}: ${err}`);
-      results.push({
-        walletId: wallet.id, label: wallet.label, address: wallet.address,
-        balanceBefore: balance, success: false, error: err,
-      });
-      continue;
-    }
+    const masterBalanceAfter = await getHubBalance(masterWallet.address);
+    const toppedUp = results.filter(r => !r.skipped && r.success).length;
+    const skipped  = results.filter(r => r.skipped).length;
+    const failed   = results.filter(r => !r.skipped && !r.success).length;
 
-    console.log(`[topup] Sending ${cfg.topupAmountUmec} umec → ${wallet.label} (had ${balance} umec)`);
-    const tx = await hubSend(masterWallet, wallet.address, cfg.topupAmountUmec);
-
-    try {
-      await logTopup(wallet.id, wallet.label, cfg.topupAmountUmec, balance, tx.success, tx.txHash, tx.error);
-    } catch { /* don't crash on log failure */ }
-
-    results.push({
-      walletId: wallet.id, label: wallet.label, address: wallet.address,
-      balanceBefore: balance, success: tx.success, txHash: tx.txHash, error: tx.error,
-    });
-
-    if (tx.success) {
-      console.log(`[topup] ✅ ${wallet.label}: ${tx.txHash?.slice(0, 12)}`);
-    } else {
-      console.log(`[topup] ❌ ${wallet.label}: ${tx.error}`);
-    }
-
-    // Small delay between sends
-    await new Promise(r => setTimeout(r, 1000));
+    console.log(`[topup] Done: ${toppedUp} topped-up, ${skipped} already OK, ${failed} failed`);
+    return { results, toppedUp, skipped, failed, masterBalanceBefore, masterBalanceAfter, masterLabel: masterWallet.label };
+  } finally {
+    _isTopupRunning = false;
   }
-
-  const masterBalanceAfter = await getHubBalance(masterWallet.address);
-  const toppedUp = results.filter(r => !r.skipped && r.success).length;
-  const skipped  = results.filter(r => r.skipped).length;
-  const failed   = results.filter(r => !r.skipped && !r.success).length;
-
-  console.log(`[topup] Done: ${toppedUp} topped-up, ${skipped} already OK, ${failed} failed`);
-  return { results, toppedUp, skipped, failed, masterBalanceBefore, masterBalanceAfter, masterLabel: masterWallet.label };
 }

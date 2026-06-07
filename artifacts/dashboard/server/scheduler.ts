@@ -169,6 +169,11 @@ export async function runAllCheckins(source = 'cron'): Promise<RunResult[]> {
           break;
         }
         lastError = result.error ?? result.note ?? 'failed';
+        // Permanent errors (account doesn't exist, no fee balance) — no point retrying
+        if (result.permanent) {
+          console.log(`[scheduler] ${wallet.label}: ⚠️ permanent error — ${lastError}`);
+          break;
+        }
         console.log(`[scheduler] ${wallet.label} attempt ${attempt}/${MAX_RETRIES}: ${lastError}`);
         if (attempt < MAX_RETRIES) {
           await new Promise(r => setTimeout(r, RETRY_DELAY_MS));
