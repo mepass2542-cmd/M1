@@ -1,1 +1,2 @@
 - [Meta Earth check-in mechanism](meta-earth-checkin.md) — real daily check-in is MsgNewRecord (wstaking), NOT MsgCheckin; fixed fee 12k umec required.
+- [Replit api-server artifact routing](replit-api-server-proxy.md) — Replit auto-creates an api-server on port 8080 that intercepts /api/* browser requests; must proxy it to the real server.
