@@ -29,6 +29,7 @@ import {
 import {
   getSchedulerState,
   runAllCheckins,
+  runCheckinForIds,
   runCheckinForNewWallets,
   getCheckinHistory,
   getAllWalletStats,
@@ -164,15 +165,19 @@ router.post('/checkin', async (req, res) => {
     const { ids } = req.body as { ids: string[] };
     if (!ids?.length) return res.status(400).json({ error: 'ids required' });
 
-    const results = [];
-    for (const id of ids) {
-      const wallet = await getWallet(id);
-      if (!wallet) { results.push({ id, success: false, error: 'Wallet not found' }); continue; }
-      const r = await performCheckin(wallet, NETWORK);
-      if (r.success) await markVerified(id);
-      results.push({ id, address: wallet.address, label: wallet.label, ...r });
-    }
-    res.json(results);
+    const state = getSchedulerState();
+    if (state.isRunning) return res.status(409).json({ error: 'Already running' });
+
+    const wallets = (await Promise.all(ids.map(id => getWallet(id)))).filter(Boolean);
+    if (!wallets.length) return res.status(404).json({ error: 'No valid wallets found' });
+
+    // Fire-and-forget — client polls GET /api/checkin/schedule for live progress.
+    // Running the loop inside the HTTP handler blocks for minutes with many wallets
+    // and hits the proxy's request timeout, returning an empty error to the browser.
+    runCheckinForIds(wallets as any).catch(e =>
+      console.error('[routes] Manual checkin error:', e?.message)
+    );
+    res.json({ started: true });
   } catch (e: any) {
     res.status(500).json({ error: e?.message ?? 'Check-in failed' });
   }

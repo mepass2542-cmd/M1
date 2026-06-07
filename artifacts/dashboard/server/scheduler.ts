@@ -184,6 +184,18 @@ export async function runAllCheckins(source = 'cron'): Promise<RunResult[]> {
  * Used when new wallets are added — only checks in wallets that haven't
  * checked in today so already-done wallets aren't double-checked.
  */
+/**
+ * Fire-and-forget: run check-in for a specific set of wallet objects (already loaded).
+ * Used by the manual check-in route. Client polls /api/checkin/schedule for progress.
+ */
+export async function runCheckinForIds(wallets: any[]): Promise<void> {
+  if (_isRunning) {
+    console.log('[scheduler] Already running — skipping manual check-in request');
+    return;
+  }
+  await _runCheckins(wallets, 'manual');
+}
+
 export async function runCheckinForNewWallets(walletIds: string[]): Promise<void> {
   if (!walletIds.length) return;
   if (_isRunning) {

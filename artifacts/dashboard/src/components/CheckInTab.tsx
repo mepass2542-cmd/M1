@@ -123,20 +123,45 @@ export function CheckInTab() {
     if (selected.size === 0) return;
     setRunning(true); setResults([]); setManualError(null); setManualLog([]);
     addLog(`Starting check-in for ${selected.size} wallet(s)…`);
+
     try {
-      const res = await api.checkin([...selected]);
-      setResults(res);
-      res.forEach(r => addLog(r.success
-        ? `✅ ${r.label} — TX: ${r.txHash}`
-        : `❌ ${r.label} — ${r.error ?? r.note ?? 'failed'}`));
-      addLog(`Done: ${res.filter(r => r.success).length}/${res.length} succeeded.`);
-      await loadSchedule();
+      await api.checkin([...selected]); // now returns { started: true } immediately
     } catch (e: any) {
       const msg = e.message ?? String(e);
-      setManualError(msg); addLog('❌ Request error: ' + msg);
-    } finally {
+      if (msg.includes('409') || /already running/i.test(msg)) {
+        setManualError('A check-in is already in progress — results will appear in the Auto-Scheduler tab.');
+      } else {
+        setManualError(msg); addLog('❌ ' + msg);
+      }
       setRunning(false);
+      return;
     }
+
+    // Poll /api/checkin/schedule every 2 s; stream per-wallet results as they arrive.
+    let prevCount = 0;
+    const poll = setInterval(async () => {
+      try {
+        const s = await api.getSchedule();
+        setSchedule(s);
+        const newEntries = (s.lastResults ?? []).slice(prevCount);
+        newEntries.forEach((r: any) => addLog(r.success
+          ? `✅ ${r.label} — TX: ${r.txHash ?? ''}`
+          : `❌ ${r.label} — ${r.error ?? 'failed'}`));
+        prevCount = (s.lastResults ?? []).length;
+
+        if (!s.isRunning) {
+          clearInterval(poll);
+          const mapped = (s.lastResults ?? []).map((r: any) => ({
+            id: r.walletId, label: r.label, success: r.success,
+            txHash: r.txHash, error: r.error,
+          })) as CheckInResult[];
+          setResults(mapped);
+          addLog(`Done: ${mapped.filter(r => r.success).length}/${mapped.length} succeeded.`);
+          setRunning(false);
+          loadSchedule();
+        }
+      } catch { /* ignore transient poll errors */ }
+    }, 2000);
   };
 
   // ── Computed ─────────────────────────────────────────────────────────────
