@@ -361,7 +361,7 @@ router.get('/diagnose/:address', async (req, res) => {
   try {
     const [hubBalance, rollupBalances, delegations, stakingRewards] = await Promise.all([
       getHubBalance(address),
-      getRollupBalances(address, NETWORK),
+      getRollupBalances(address, NETWORK).catch(() => [] as Coin[]),
       getStakingDelegations(address),
       getStakingRewards(address),
     ]);

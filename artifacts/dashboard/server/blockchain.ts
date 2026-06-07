@@ -225,19 +225,18 @@ export async function getHubBalance(address: string): Promise<number> {
 export interface Coin { denom: string; amount: number }
 
 export async function getRollupBalances(address: string, network = 'mainnet'): Promise<Coin[]> {
-  try {
-    const rest = ROLLUP_REST[network] ?? ROLLUP_REST.mainnet;
-    const res = await fetchWithTimeout(
-      `${rest}/cosmos/bank/v1beta1/balances/${address}?pagination.limit=50`
-    );
-    const json = (await res.json()) as any;
-    return (json.balances ?? []).map((b: any) => ({
-      denom: b.denom,
-      amount: parseInt(b.amount, 10),
-    }));
-  } catch {
-    return [];
-  }
+  const rest = ROLLUP_REST[network] ?? ROLLUP_REST.mainnet;
+  // Let errors propagate — callers must distinguish "query failed" from "genuinely empty"
+  const res = await fetchWithTimeout(
+    `${rest}/cosmos/bank/v1beta1/balances/${address}?pagination.limit=50`
+  );
+  if (!res.ok) throw new Error(`Rollup REST error ${res.status} for ${address}`);
+  const json = (await res.json()) as any;
+  if (json.code !== undefined) throw new Error(`Rollup REST gRPC error ${json.code}: ${json.message}`);
+  return (json.balances ?? []).map((b: any) => ({
+    denom: b.denom,
+    amount: parseInt(b.amount, 10),
+  }));
 }
 
 // ─── Staking Queries — wstaking custom module ─────────────────────────────────
@@ -373,14 +372,14 @@ export interface WalletBalances {
 }
 
 export async function getAllBalances(address: string, network = 'mainnet'): Promise<WalletBalances> {
-  const [hub, rollup, staking] = await Promise.all([
+  const [hub, rollupResult, staking] = await Promise.all([
     getHubBalance(address),
-    getRollupBalances(address, network),
+    getRollupBalances(address, network).catch(() => [] as Coin[]),
     getStakingRewards(address),
   ]);
-  const ibcMec = rollup.find(b => b.denom === ROLLUP_IBC_DENOM);
+  const ibcMec = rollupResult.find(b => b.denom === ROLLUP_IBC_DENOM);
   const rollupTotal = ibcMec?.amount ?? 0;
-  return { hub, rollup, rollupTotal, staking };
+  return { hub, rollup: rollupResult, rollupTotal, staking };
 }
 
 // ─── Operations ───────────────────────────────────────────────────────────────
@@ -419,7 +418,7 @@ export async function hubSend(
 
 // Minimum sendable rollup amount = 0.01 MEC = 10 000 smallest units
 // Fee reservation = 10 000 (kept for future check-in fees)
-// So we only sweep if balance > 20 000 (fee_reserve + min_send)
+// So we only sweep if sendable balance (after fee reservation) >= ROLLUP_MIN_SEND
 const ROLLUP_FEE_RESERVE = 10_000;
 const ROLLUP_MIN_SEND    = 10_000;
 
@@ -428,16 +427,26 @@ export async function rollupSendAll(
   to: string,
   network = 'mainnet'
 ): Promise<TxResult> {
-  const balances = await getRollupBalances(wallet.address, network);
+  // Always query the real balance — errors propagate as failures (not silent skips)
+  let balances: Coin[];
+  try {
+    balances = await getRollupBalances(wallet.address, network);
+  } catch (err: any) {
+    return { success: false, error: `Failed to query rollup balance: ${err?.message ?? err}` };
+  }
+
+  // Find IBC MEC balance for display
+  const ibcMec = balances.find(b => b.denom === ROLLUP_IBC_DENOM);
+  const ibcAmount = ibcMec?.amount ?? 0;
+
   const msgs: any[] = [];
   for (const b of balances) {
     if (b.amount <= 0) continue;
-    // For IBC MEC: keep ROLLUP_FEE_RESERVE for future check-in fees, send the rest.
-    // For other denoms: send everything.
+    // IBC MEC: keep fee reserve, send the rest. Other denoms: send everything.
     const sendAmount = b.denom === ROLLUP_IBC_DENOM
       ? b.amount - ROLLUP_FEE_RESERVE
       : b.amount;
-    // Only sweep if there's at least 0.01 MEC worth sending
+    // Only include coins with at least 0.01 MEC (10 000 units) to send
     if (sendAmount < ROLLUP_MIN_SEND) continue;
     msgs.push({
       typeUrl: '/cosmos.bank.v1beta1.MsgSend',
@@ -449,17 +458,24 @@ export async function rollupSendAll(
     });
   }
 
-  // Nothing qualifies — skip gracefully so hub/staking steps still proceed
+  // Confirmed low balance — include actual amount so user can see what was checked
   if (msgs.length === 0) {
-    return { success: true, note: 'Rollup balance below 0.01 MEC minimum — skipped' };
+    const mecDisplay = (ibcAmount / 1_000_000).toFixed(4);
+    return {
+      success: true,
+      note: `Rollup IBC MEC balance ${mecDisplay} MEC (${ibcAmount} units) is below 0.01 MEC minimum after fee reserve — skipped`,
+    };
   }
 
   const result = await rollupBroadcast(wallet, msgs, 'Rollup sweep', network);
 
-  // Insufficient funds (code 5) means our balance estimate was stale — treat as skip
-  // so the caller (autoSweep) still shows the hub/staking steps as successful
+  // code 5 = chain confirms insufficient funds (balance may be slightly stale) — skip gracefully
   if (!result.success && result.error?.includes('insufficient funds')) {
-    return { success: true, note: 'Rollup balance insufficient after fees — skipped' };
+    const mecDisplay = (ibcAmount / 1_000_000).toFixed(4);
+    return {
+      success: true,
+      note: `Rollup sweep skipped — on-chain balance (${mecDisplay} MEC queried) insufficient after fees`,
+    };
   }
 
   return result;

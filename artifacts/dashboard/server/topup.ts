@@ -1,6 +1,6 @@
 import { pool } from './db';
 import { getWallets, getWallet } from './store';
-import { getHubBalance, getRollupBalances, hubSend, ibcTransferToRollup, ROLLUP_IBC_DENOM } from './blockchain';
+import { getHubBalance, getRollupBalances, hubSend, ibcTransferToRollup, ROLLUP_IBC_DENOM, Coin } from './blockchain';
 
 export interface TopupConfig {
   enabled: boolean;
@@ -166,7 +166,7 @@ export async function runTopup(source = 'manual'): Promise<TopupRunSummary> {
       targets.map(async w => {
         const [hubBal, rollupCoins] = await Promise.all([
           getHubBalance(w.address),
-          cfg.ibcEnabled ? getRollupBalances(w.address) : Promise.resolve([]),
+          cfg.ibcEnabled ? getRollupBalances(w.address).catch(() => [] as Coin[]) : Promise.resolve([] as Coin[]),
         ]);
         hubBalMap.set(w.id, hubBal);
         const ibcCoin = rollupCoins.find(c => c.denom === ROLLUP_IBC_DENOM);
