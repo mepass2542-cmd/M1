@@ -435,48 +435,89 @@ export async function rollupSendAll(
     return { success: false, error: `Failed to query rollup balance: ${err?.message ?? err}` };
   }
 
-  // Find IBC MEC balance for display
+  // Find IBC MEC balance — all fees are paid in IBC MEC on the rollup chain
   const ibcMec = balances.find(b => b.denom === ROLLUP_IBC_DENOM);
   const ibcAmount = ibcMec?.amount ?? 0;
+  // Wallet needs at least ROLLUP_FEE_RESERVE IBC units to pay tx fees for ANY send
+  const hasEnoughForFees = ibcAmount >= ROLLUP_FEE_RESERVE;
 
   const msgs: any[] = [];
   for (const b of balances) {
     if (b.amount <= 0) continue;
-    // IBC MEC: keep fee reserve, send the rest. Other denoms: send everything.
-    const sendAmount = b.denom === ROLLUP_IBC_DENOM
-      ? b.amount - ROLLUP_FEE_RESERVE
-      : b.amount;
-    // Only include coins with at least 0.01 MEC (10 000 units) to send
-    if (sendAmount < ROLLUP_MIN_SEND) continue;
-    msgs.push({
-      typeUrl: '/cosmos.bank.v1beta1.MsgSend',
-      value: {
-        fromAddress: wallet.address,
-        toAddress: to,
-        amount: [{ denom: b.denom, amount: String(sendAmount) }],
-      },
-    });
+
+    if (b.denom === ROLLUP_IBC_DENOM) {
+      // IBC MEC: keep fee reserve, send the rest
+      const sendAmount = b.amount - ROLLUP_FEE_RESERVE;
+      if (sendAmount < ROLLUP_MIN_SEND) continue;
+      msgs.push({
+        typeUrl: '/cosmos.bank.v1beta1.MsgSend',
+        value: {
+          fromAddress: wallet.address,
+          toAddress: to,
+          amount: [{ denom: b.denom, amount: String(sendAmount) }],
+        },
+      });
+    } else {
+      // Other denoms (e.g. urax): fees are still paid in IBC MEC, so we need
+      // IBC denom in the wallet to cover the fee before we can send anything else
+      if (!hasEnoughForFees) continue;
+      if (b.amount < ROLLUP_MIN_SEND) continue;
+      msgs.push({
+        typeUrl: '/cosmos.bank.v1beta1.MsgSend',
+        value: {
+          fromAddress: wallet.address,
+          toAddress: to,
+          amount: [{ denom: b.denom, amount: String(b.amount) }],
+        },
+      });
+    }
   }
 
-  // Confirmed low balance — show both queried total and sendable amount for clarity
+  // Build a human-readable summary of what was found on rollup
+  function buildBalanceSummary(): string {
+    if (balances.length === 0) return 'No tokens on rollup';
+    return balances.map(b => {
+      if (b.denom === ROLLUP_IBC_DENOM) {
+        return `${(b.amount / 100_000_000).toFixed(8)} IBC-MEC (${b.amount} units)`;
+      }
+      return `${b.amount} ${b.denom}`;
+    }).join(', ');
+  }
+
   if (msgs.length === 0) {
-    const totalDisplay    = (ibcAmount / 100_000_000).toFixed(8);
-    const sendable        = Math.max(0, ibcAmount - ROLLUP_FEE_RESERVE);
-    const sendableDisplay = (sendable / 100_000_000).toFixed(8);
+    const ibcDisplay  = (ibcAmount / 100_000_000).toFixed(8);
+    const sendable    = Math.max(0, ibcAmount - ROLLUP_FEE_RESERVE);
+    const sendDisplay = (sendable / 100_000_000).toFixed(8);
+
+    // Identify why each token was skipped for a clear diagnostic message
+    const nonIbcTokens = balances.filter(b => b.denom !== ROLLUP_IBC_DENOM && b.amount > 0);
+    let reason: string;
+    if (balances.length === 0) {
+      reason = 'Rollup wallet has no tokens — fund via IBC bridge first';
+    } else if (ibcAmount === 0 && nonIbcTokens.length > 0) {
+      const tokenList = nonIbcTokens.map(b => `${b.amount} ${b.denom}`).join(', ');
+      reason = `Has non-IBC tokens (${tokenList}) but needs IBC-MEC for fees — bridge MEC from hub first`;
+    } else if (!hasEnoughForFees && nonIbcTokens.length > 0) {
+      const tokenList = nonIbcTokens.map(b => `${b.amount} ${b.denom}`).join(', ');
+      reason = `IBC-MEC balance (${ibcAmount} units) below fee reserve (${ROLLUP_FEE_RESERVE}); also has: ${tokenList}`;
+    } else {
+      reason = `sendable ${sendDisplay} MEC (${sendable} units) below 0.001 MEC dust threshold`;
+    }
+
     return {
       success: true,
-      note: `Rollup balance ${totalDisplay} MEC queried; sendable after fee reserve: ${sendableDisplay} MEC (${sendable} units) — below 0.001 MEC dust threshold, skipped`,
+      note: `Rollup queried: ${buildBalanceSummary()} | IBC-MEC: ${ibcDisplay} MEC — ${reason}, skipped`,
     };
   }
 
   const result = await rollupBroadcast(wallet, msgs, 'Rollup sweep', network);
 
-  // code 5 = chain confirms insufficient funds (balance may be slightly stale) — skip gracefully
+  // Insufficient funds: chain may have a stale view of the balance
   if (!result.success && result.error?.includes('insufficient funds')) {
-    const totalDisplay = (ibcAmount / 100_000_000).toFixed(8);
+    const ibcDisplay = (ibcAmount / 100_000_000).toFixed(8);
     return {
       success: true,
-      note: `Rollup sweep skipped — on-chain balance (${totalDisplay} MEC REST-queried) insufficient; chain may have a stale view`,
+      note: `Rollup sweep skipped — on-chain balance (${ibcDisplay} IBC-MEC REST-queried, ${buildBalanceSummary()}) insufficient; chain may have a stale view`,
     };
   }
 

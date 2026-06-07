@@ -24,6 +24,7 @@ import {
   undelegateFromValidator,
   autoSweep,
   SweepMode,
+  Coin,
 } from './blockchain';
 import {
   getSchedulerState,
