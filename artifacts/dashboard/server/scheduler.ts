@@ -4,11 +4,13 @@ import { getWallets, getWallet } from './store';
 import { performCheckin } from './blockchain';
 import { getTopupConfig, runTopup } from './topup';
 
-const NETWORK   = process.env.NETWORK ?? 'mainnet';
-const CRON_EXPR = process.env.CRON_SCHEDULE ?? '0 9 * * *';
+const NETWORK      = process.env.NETWORK ?? 'mainnet';
+const CRON_EXPR    = process.env.CRON_SCHEDULE ?? '0 9 * * *';
 const MAX_RETRIES    = 3;
 const RETRY_DELAY_MS = 2 * 60 * 1000; // 2 min between retries per wallet
 const WATCHDOG_MS    = 5 * 60 * 1000; // check every 5 min for missed wallets
+// How many wallets to check in simultaneously. Higher = faster but more RPC load.
+const CONCURRENCY  = Math.max(1, parseInt(process.env.CHECKIN_CONCURRENCY ?? '5', 10));
 
 // ── In-memory state ──────────────────────────────────────────────────────────
 
@@ -219,6 +221,39 @@ export async function runCheckinForNewWallets(walletIds: string[]): Promise<void
   await _runCheckins(valid as any, 'new-wallet');
 }
 
+/** Check in a single wallet with retries. Returns the RunResult. */
+async function _checkinOne(wallet: any): Promise<RunResult> {
+  let success   = false;
+  let txHash: string | undefined;
+  let lastError: string | undefined;
+
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    const result = await performCheckin(wallet, NETWORK);
+    if (result.success) {
+      success = true;
+      txHash  = result.txHash;
+      break;
+    }
+    lastError = result.error ?? (result as any).note ?? 'failed';
+    if ((result as any).permanent) {
+      console.log(`[scheduler] ${wallet.label}: ⚠️ permanent error — ${lastError}`);
+      break;
+    }
+    console.log(`[scheduler] ${wallet.label} attempt ${attempt}/${MAX_RETRIES}: ${lastError}`);
+    if (attempt < MAX_RETRIES) await new Promise(r => setTimeout(r, RETRY_DELAY_MS));
+  }
+
+  try {
+    await logCheckin(wallet.id, success, txHash, success ? undefined : lastError);
+  } catch (dbErr: any) {
+    console.error('[scheduler] DB log error:', dbErr?.message);
+  }
+
+  const entry: RunResult = { walletId: wallet.id, label: wallet.label, success, txHash, error: lastError };
+  console.log(`[scheduler] ${wallet.label}: ${success ? '✅ ' + (txHash?.slice(0, 12) ?? '') : '❌ ' + lastError}`);
+  return entry;
+}
+
 async function _runCheckins(wallets: any[], source: string): Promise<RunResult[]> {
   _isRunning   = true;
   _lastRunAt   = new Date();
@@ -247,40 +282,20 @@ async function _runCheckins(wallets: any[], source: string): Promise<RunResult[]
       console.error('[scheduler] Top-up pre-flight error (continuing):', topupErr?.message);
     }
 
-    console.log(`[scheduler] ${source}: checking in ${wallets.length} wallet(s)`);
+    const batches = Math.ceil(wallets.length / CONCURRENCY);
+    console.log(`[scheduler] ${source}: checking in ${wallets.length} wallet(s) — ${CONCURRENCY} at a time (${batches} batch${batches !== 1 ? 'es' : ''})`);
 
-    for (const wallet of wallets) {
-      let success   = false;
-      let txHash: string | undefined;
-      let lastError: string | undefined;
+    // Process wallets in parallel batches. Each batch runs CONCURRENCY wallets
+    // simultaneously; batches run sequentially so we don't overwhelm the RPC node.
+    for (let i = 0; i < wallets.length; i += CONCURRENCY) {
+      const batch = wallets.slice(i, i + CONCURRENCY);
+      const batchResults = await Promise.all(batch.map(w => _checkinOne(w)));
+      _lastResults.push(...batchResults);
 
-      for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-        const result = await performCheckin(wallet, NETWORK);
-        if (result.success) {
-          success = true;
-          txHash  = result.txHash;
-          break;
-        }
-        lastError = result.error ?? result.note ?? 'failed';
-        if (result.permanent) {
-          console.log(`[scheduler] ${wallet.label}: ⚠️ permanent error — ${lastError}`);
-          break;
-        }
-        console.log(`[scheduler] ${wallet.label} attempt ${attempt}/${MAX_RETRIES}: ${lastError}`);
-        if (attempt < MAX_RETRIES) await new Promise(r => setTimeout(r, RETRY_DELAY_MS));
+      // Small pause between batches to avoid flooding the RPC node.
+      if (i + CONCURRENCY < wallets.length) {
+        await new Promise(r => setTimeout(r, 500));
       }
-
-      try {
-        await logCheckin(wallet.id, success, txHash, success ? undefined : lastError);
-      } catch (dbErr: any) {
-        console.error('[scheduler] DB log error:', dbErr?.message);
-      }
-
-      const entry: RunResult = { walletId: wallet.id, label: wallet.label, success, txHash, error: lastError };
-      _lastResults.push(entry);
-      console.log(`[scheduler] ${wallet.label}: ${success ? '✅ ' + (txHash?.slice(0, 12) ?? '') : '❌ ' + lastError}`);
-
-      await new Promise(r => setTimeout(r, 800));
     }
 
     const ok = _lastResults.filter(r => r.success).length;
