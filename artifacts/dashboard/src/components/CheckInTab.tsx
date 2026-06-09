@@ -279,27 +279,60 @@ export function CheckInTab() {
           </div>
 
           {/* Last run results */}
-          {(schedule?.lastResults?.length ?? 0) > 0 && (
-            <div className="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
-              <p className="px-5 py-3 text-xs font-semibold text-slate-400 uppercase tracking-wider border-b border-slate-700">
-                Last Run Results ({relTime(schedule!.lastRunAt)})
-              </p>
-              <div className="divide-y divide-slate-700/40 max-h-64 overflow-y-auto">
-                {schedule!.lastResults.map(r => (
-                  <div key={r.walletId} className="flex items-center gap-3 px-5 py-2.5">
-                    <span className="text-sm">{r.success ? '✅' : '❌'}</span>
-                    <span className="text-sm text-slate-300 flex-1">{r.label}</span>
-                    {r.txHash && (
-                      <span className="text-xs text-slate-500 font-mono">{r.txHash.slice(0, 14)}…</span>
-                    )}
-                    {r.error && !r.success && (
-                      <span className="text-xs text-red-400 max-w-xs truncate">{r.error}</span>
-                    )}
+          {(schedule?.lastResults?.length ?? 0) > 0 && (() => {
+            const allResults = schedule!.lastResults;
+            const lowBalance = allResults.filter(r => !r.success && r.error?.includes('Insufficient hub balance'));
+            const otherFailed = allResults.filter(r => !r.success && !r.error?.includes('Insufficient hub balance'));
+            const succeeded   = allResults.filter(r => r.success);
+            return (
+              <div className="space-y-3">
+                {/* Top-up needed banner */}
+                {lowBalance.length > 0 && (
+                  <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl overflow-hidden">
+                    <p className="px-5 py-3 text-xs font-semibold text-amber-400 uppercase tracking-wider border-b border-amber-500/20 flex items-center gap-2">
+                      <span>⚠️</span> Needs Top-up ({lowBalance.length} wallet{lowBalance.length !== 1 ? 's' : ''})
+                      <span className="ml-auto font-normal text-amber-500/70 normal-case">Need ≥ 11 000 umec on hub chain</span>
+                    </p>
+                    <div className="divide-y divide-amber-500/10 max-h-40 overflow-y-auto">
+                      {lowBalance.map(r => (
+                        <div key={r.walletId} className="flex items-center gap-3 px-5 py-2.5">
+                          <span className="text-sm">💰</span>
+                          <span className="text-sm text-amber-200 flex-1">{r.label}</span>
+                          <span className="text-xs text-amber-500/80 max-w-xs truncate">
+                            {r.error?.match(/have (\d[\d,]*) umec/)?.[0] ?? 'low balance'}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                ))}
+                )}
+
+                {/* Success + other failures */}
+                <div className="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
+                  <p className="px-5 py-3 text-xs font-semibold text-slate-400 uppercase tracking-wider border-b border-slate-700 flex items-center gap-2">
+                    Last Run Results ({relTime(schedule!.lastRunAt)})
+                    <span className="ml-auto font-normal normal-case text-slate-500">
+                      {succeeded.length} ok · {otherFailed.length} failed · {lowBalance.length} low balance
+                    </span>
+                  </p>
+                  <div className="divide-y divide-slate-700/40 max-h-64 overflow-y-auto">
+                    {[...succeeded, ...otherFailed].map(r => (
+                      <div key={r.walletId} className="flex items-center gap-3 px-5 py-2.5">
+                        <span className="text-sm">{r.success ? '✅' : '❌'}</span>
+                        <span className="text-sm text-slate-300 flex-1">{r.label}</span>
+                        {r.txHash && (
+                          <span className="text-xs text-slate-500 font-mono">{r.txHash.slice(0, 14)}…</span>
+                        )}
+                        {r.error && !r.success && (
+                          <span className="text-xs text-red-400 max-w-xs truncate">{r.error}</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
         </div>
       )}
 
@@ -314,7 +347,7 @@ export function CheckInTab() {
           )}
 
           <div className="bg-slate-800/50 border border-slate-700/50 rounded-lg px-4 py-3 text-xs text-slate-400">
-            <strong className="text-slate-300">Manual check-in:</strong> Broadcasts <code className="text-blue-400">MsgCheckIn</code> immediately for selected wallets on the rollup chain. Zero fee. The auto-scheduler handles daily runs automatically.
+            <strong className="text-slate-300">Manual check-in:</strong> Broadcasts <code className="text-blue-400">MsgNewRecord</code> immediately for selected wallets on the hub chain (<code className="text-slate-300">me-chain</code>). Requires ≥ 11 000 umec hub balance per wallet. The auto-scheduler handles daily runs automatically.
           </div>
 
           <div className="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">

@@ -35,6 +35,7 @@ const HUB_FEE = { amount: [{ denom: 'umec', amount: '12000' }], gas: '200000' };
 // Hub check-in fee: chain enforces a flat minimum of 10 000 umec (regardless of gas).
 // Real MsgNewRecord txs use ~75 000 gas out of 500 000 limit, paying ~10 000–11 000 umec.
 const HUB_CHECKIN_FEE = { amount: [{ denom: 'umec', amount: '11000' }], gas: '500000' };
+export const HUB_CHECKIN_MIN_UMEC = 11_000;
 // Rollup fee: zero amount — the custom fee_checker.go (baseIbcFeesRequired = 10000)
 // only enforces that minimum when minGasPrices is non-zero on the node.
 // This rollup runs with minGasPrices="" so the zero-fee path in fee_checker.go
@@ -439,6 +440,16 @@ export async function getAllBalances(address: string, network = 'mainnet'): Prom
 
 async function hubCheckin(wallet: StoredWallet): Promise<TxResult> {
   try {
+    // Pre-check hub balance — saves 2 wasted retries for wallets that can't afford the fee.
+    const hubBalance = await getHubBalance(wallet.address);
+    if (hubBalance < HUB_CHECKIN_MIN_UMEC) {
+      return {
+        success: false,
+        error: `Insufficient hub balance: need ${HUB_CHECKIN_MIN_UMEC.toLocaleString()} umec, have ${hubBalance.toLocaleString()} umec — top up to enable check-in`,
+        permanent: true,
+      };
+    }
+
     const client = await buildHubClient(wallet);
     const today = new Date().toISOString().slice(0, 10).replace(/-/g, ''); // "YYYYMMDD"
     const actionNumber = `MEcheckin${today}`;
