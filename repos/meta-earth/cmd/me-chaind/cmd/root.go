@@ -1,4 +1,4 @@
-package cmd
+ bnvpackage cmd
 
 import (
 	"errors"

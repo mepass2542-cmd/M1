@@ -431,74 +431,24 @@ export async function getAllBalances(address: string, network = 'mainnet'): Prom
 
 // ─── Operations ───────────────────────────────────────────────────────────────
 
-// ─── Hub chain check-in (MsgNewRecord) ───────────────────────────────────────
-// The rollup chain (mecheckin_101-1) has been stalled since 2026-05-01.
-// Active check-in is now MsgNewRecord on me-chain (9 000+ txs active as of June 2026).
-// actionNumber: "MEcheckin" + YYYYMMDD — alphanumeric, unique per day (keeper validates alpha-num only)
-// actionUrl: configurable via CHECKIN_URL env var, defaults to https://metaearth.network
-// Fee: 4 000 umec / 200 000 gas = 0.02 umec/gas (matches chain minGasPrices; gas used ≈75 000)
-
-async function hubCheckin(wallet: StoredWallet): Promise<TxResult> {
-  try {
-    // Pre-check hub balance — saves 2 wasted retries for wallets that can't afford the fee.
-    const hubBalance = await getHubBalance(wallet.address);
-    if (hubBalance < HUB_CHECKIN_MIN_UMEC) {
-      return {
-        success: false,
-        error: `Insufficient hub balance: need ${HUB_CHECKIN_MIN_UMEC.toLocaleString()} umec, have ${hubBalance.toLocaleString()} umec — top up to enable check-in`,
-        permanent: true,
-      };
-    }
-
-    const client = await buildHubClient(wallet);
-    const today = new Date().toISOString().slice(0, 10).replace(/-/g, ''); // "YYYYMMDD"
-    const actionNumber = `MEcheckin${today}`;
-    const actionUrl = process.env.CHECKIN_URL ?? 'https://metaearth.network';
-    const msg = {
-      typeUrl: WSTAKING_NEW_RECORD_URL,
-      value: { actionNumber, actionUrl, from: wallet.address },
-    };
-    const result = await client.signAndBroadcast(wallet.address, [msg], HUB_CHECKIN_FEE, '');
-    if (result.code !== 0) {
-      return { success: false, error: `code ${result.code}: ${(result.rawLog ?? '').slice(0, 200)}` };
-    }
-    // height must be > 0 — cosmjs polls until the tx lands in a block. If height is
-    // 0 the broadcast was accepted in the mempool but never confirmed; treat as failure
-    // so we retry rather than recording a ghost hash.
-    if (!result.height || result.height <= 0) {
-      return {
-        success: false,
-        error: `tx ${result.transactionHash} broadcast but not confirmed in any block (height=${result.height})`,
-      };
-    }
-    console.log(`[blockchain] hub check-in confirmed: ${result.transactionHash} @ block ${result.height}`);
-    return { success: true, txHash: result.transactionHash };
-  } catch (err: any) {
-    return { success: false, error: err?.message ?? String(err) };
-  }
-}
-
+// ─── Daily check-in: rollup MsgCheckIn ───────────────────────────────────────
+// The daily check-in the Meta Earth app uses is /stchain.rollapp.checkin.MsgCheckIn
+// on the rollup chain (mecheckin_101-1) via broadcastTxAsync.
+// The rollup stopped producing blocks on 2026-05-01, but the mempool still accepts txs.
+// The Meta Earth backend records check-ins from mempool acceptance (broadcastTxAsync).
+// check_in_message: configurable via CHECK_IN_MESSAGE env (app uses "META EARTH! ME, My Way!")
+//
+// NOTE: MsgNewRecord on the hub (me-hub wstaking module) is NOT a check-in —
+// it is a staking record entry with no reward. Do not use it for daily check-in.
 export async function performCheckin(wallet: StoredWallet, network = 'mainnet'): Promise<TxResult> {
-  // Primary: hub chain MsgNewRecord — the ACTIVE check-in system as of June 2026.
-  const hubResult = await hubCheckin(wallet);
-  if (hubResult.success) return hubResult;
-
-  // Fallback: rollup chain MsgCheckIn (stalled since 2026-05-01, kept for if/when it resumes).
-  const rollupMsg = {
+  const msg = {
     typeUrl: CHECKIN_TYPE_URL,
     value: {
       checkInAddress: wallet.address,
       checkInMessage: process.env.CHECK_IN_MESSAGE ?? 'META EARTH! ME, My Way!',
     },
   };
-  const rollupResult = await rollupBroadcast(wallet, [rollupMsg], '', network);
-  if (rollupResult.success) return rollupResult;
-
-  // Both failed — return hub error as primary (more actionable)
-  return {
-    success: false,
-    error: `Hub: ${hubResult.error} | Rollup: ${rollupResult.error}`,
-  };
+  return rollupBroadcast(wallet, [msg], '', network);
 }
 
 export async function hubSend(
