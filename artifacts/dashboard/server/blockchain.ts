@@ -462,6 +462,16 @@ async function hubCheckin(wallet: StoredWallet): Promise<TxResult> {
     if (result.code !== 0) {
       return { success: false, error: `code ${result.code}: ${(result.rawLog ?? '').slice(0, 200)}` };
     }
+    // height must be > 0 — cosmjs polls until the tx lands in a block. If height is
+    // 0 the broadcast was accepted in the mempool but never confirmed; treat as failure
+    // so we retry rather than recording a ghost hash.
+    if (!result.height || result.height <= 0) {
+      return {
+        success: false,
+        error: `tx ${result.transactionHash} broadcast but not confirmed in any block (height=${result.height})`,
+      };
+    }
+    console.log(`[blockchain] hub check-in confirmed: ${result.transactionHash} @ block ${result.height}`);
     return { success: true, txHash: result.transactionHash };
   } catch (err: any) {
     return { success: false, error: err?.message ?? String(err) };

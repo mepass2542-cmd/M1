@@ -10,7 +10,7 @@ const MAX_RETRIES    = 3;
 const RETRY_DELAY_MS = 2 * 60 * 1000; // 2 min between retries per wallet
 const WATCHDOG_MS    = 5 * 60 * 1000; // check every 5 min for missed wallets
 // How many wallets to check in simultaneously. Higher = faster but more RPC load.
-const CONCURRENCY  = Math.max(1, parseInt(process.env.CHECKIN_CONCURRENCY ?? '5', 10));
+const CONCURRENCY  = Math.max(1, parseInt(process.env.CHECKIN_CONCURRENCY ?? '2', 10));
 
 // ── In-memory state ──────────────────────────────────────────────────────────
 
