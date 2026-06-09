@@ -230,6 +230,13 @@ export function CheckInTab() {
             </div>
           )}
 
+          {/* Chain clarification */}
+          <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg px-4 py-2.5 text-xs text-blue-300">
+            <span className="font-semibold">⛓ Hub chain only:</span>{' '}
+            Check-ins broadcast <code className="text-blue-200">MsgNewRecord</code> on the <span className="font-medium">me-chain hub</span> — <span className="font-medium">not</span> the rollup (<code className="text-blue-400/80">mecheckin_101-1</code> has been stalled since May 2026).
+            TX hashes will only appear on the me-chain hub explorer, not any rollup explorer.
+          </div>
+
           {/* Scheduler info */}
           <div className="bg-slate-800/50 border border-slate-700/50 rounded-lg px-4 py-3 text-xs text-slate-400 space-y-1">
             <p><span className="text-slate-300 font-medium">Always-on, never misses a streak:</span></p>
@@ -432,6 +439,15 @@ export function CheckInTab() {
       {/* ── HISTORY VIEW ───────────────────────────────────────────────── */}
       {view === 'history' && (
         <div className="space-y-3">
+          {/* Chain clarification banner */}
+          <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg px-4 py-3 text-xs text-blue-300 space-y-0.5">
+            <p className="font-semibold">ℹ️ These are hub chain (me-chain) transactions</p>
+            <p className="text-blue-400/80">
+              Check-ins use <code className="text-blue-300">MsgNewRecord</code> on the <span className="font-medium">me-chain hub</span> (chain ID: <code className="text-blue-300">me-chain</code>).
+              The rollup chain (<code className="text-blue-300">mecheckin_101-1</code>) stopped producing blocks in May 2026 and is no longer used.
+              TX hashes shown here will <span className="font-medium">not</span> appear on any rollup explorer — search them on the me-chain hub explorer instead.
+            </p>
+          </div>
           <div className="flex items-center justify-between">
             <p className="text-xs text-slate-500">Last 200 check-in attempts (auto-scheduled + manual)</p>
             <button onClick={loadHistory} className="text-xs text-blue-400 hover:text-blue-300">↻ Refresh</button>
@@ -449,7 +465,10 @@ export function CheckInTab() {
                     <div className="flex-1 min-w-0">
                       <p className="text-xs font-medium text-slate-300 truncate">{h.label}</p>
                       {h.tx_hash && (
-                        <p className="text-xs text-slate-500 font-mono">{h.tx_hash.slice(0, 20)}…</p>
+                        <p className="text-xs text-slate-500 font-mono flex items-center gap-1.5">
+                          <span className="text-blue-500/70 text-[10px] font-sans uppercase tracking-wide shrink-0">hub</span>
+                          {h.tx_hash.slice(0, 22)}…
+                        </p>
                       )}
                       {h.error && (
                         <p className="text-xs text-red-400 truncate">{h.error}</p>
