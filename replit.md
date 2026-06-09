@@ -26,12 +26,16 @@ A daily check-in automation bot for the Meta Earth blockchain, plus all openmeta
 
 ## Architecture decisions
 
-- **Daily check-in is `MsgCheckIn` in the `stchain.rollapp.checkin` module** — type URL `/stchain.rollapp.checkin.MsgCheckIn` on the rollup chain (`mecheckin_101-1`), NOT on me-hub. The rollup's `MsgCheckIn` has exactly **2 fields**: `checkInAddress` (1) and `checkInMessage` (2). Do NOT add a 3rd field — it will corrupt the tx.
-- **Rollup RPC**: mainnet `http://118.175.0.247:23011` (chain ID `mecheckin_101-1`, prefix `me`).
-- **Fee**: ZERO amount array — use `broadcastTxAsync` to bypass CheckTx. The rollup's custom `fee_checker.go` only validates fees during `IsCheckTx()`. In DeliverTx (block inclusion), zero-fee txs succeed. `broadcastTxSync`/`broadcastTxCommit` will fail if the wallet has no IBC MEC because the node runs `minGasPrices = "0.001umec"`.
-- **Broadcast mode**: `broadcastTxAsync` — bypasses CheckTx (where fee validation runs), tx goes straight to block inclusion via DeliverTx where no fee check applies.
+- **Daily check-in is `MsgNewRecord` in the `metaearth.wstaking` module** — type URL `/metaearth.wstaking.MsgNewRecord` on the **hub chain** (`me-chain`). The rollup chain (`mecheckin_101-1`) stopped producing blocks on 2026-05-01 and is effectively dead.
+- **Hub RPC**: `http://118.175.0.247:16657` (chain ID `me-chain`, prefix `me`, REST port `11317`).
+- **MsgNewRecord fields** (3): `actionNumber` (1, alphanumeric only), `actionUrl` (2, any non-empty URL), `from` (3, wallet address). Keeper validates actionNumber is alphanumeric and actionUrl is non-empty — no other checks.
+- **Bot actionNumber format**: `MEcheckin` + `YYYYMMDD` (e.g. `MEcheckin20260609`). Configurable via env; unique per day.
+- **Hub fee**: minimum 10 000 umec enforced by the chain. Bot uses `11 000 umec / 500 000 gas`. Wallets with fewer than 11 000 umec will fail with "insufficient funds" and must be topped up.
+- **Broadcast mode**: `signAndBroadcast` (sync, standard) — hub chain uses normal fee checking, no async bypass needed.
+- Bot falls back to rollup `MsgCheckIn` if hub fails, but rollup is stalled so fallback will also fail.
 - Bot uses `@cosmjs/stargate` + `@cosmjs/proto-signing` + `@cosmjs/tendermint-rpc` directly (SDK not on npm).
 - `protobufjs` overridden to `^7.4.0` in `pnpm-workspace.yaml` — version 6.x blocked by Replit security policy.
+- **Rollup (legacy, stalled since 2026-05-01)**: `MsgCheckIn` on `mecheckin_101-1`, 2-field proto (`checkInAddress`, `checkInMessage`), zero fee, `broadcastTxAsync` to bypass CheckTx. Kept as fallback code only.
 
 ## Product
 
@@ -60,7 +64,8 @@ _Populate as you build — explicit user instructions worth remembering across s
 | `RUN_ON_START` | `true` |
 | `CRON_SCHEDULE` | `0 8 * * *` (08:00 UTC daily, optional) |
 | `CHECK_IN_TIMEZONE` | Timezone string for check-in (e.g. `UTC`, `UTC+8`, optional — defaults to `UTC`) |
-| `CHECK_IN_MESSAGE` | Custom check-in message (optional, defaults to `META EARTH! ME, My Way!`) |
+| `CHECK_IN_MESSAGE` | Custom check-in message (optional, used for rollup fallback only) |
+| `CHECKIN_URL` | URL submitted as `actionUrl` in `MsgNewRecord` (optional, defaults to `https://metaearth.network`) |
 
 ## Firebase Auth (dashboard login)
 

@@ -32,6 +32,9 @@ export const ROLLUP_IBC_DENOM =
   'ibc/BC7F4D581D88785A22824C8FB6807DFC3B65C1764AFF1230D954AAB06B70CBC5';
 
 const HUB_FEE = { amount: [{ denom: 'umec', amount: '12000' }], gas: '200000' };
+// Hub check-in fee: chain enforces a flat minimum of 10 000 umec (regardless of gas).
+// Real MsgNewRecord txs use ~75 000 gas out of 500 000 limit, paying ~10 000–11 000 umec.
+const HUB_CHECKIN_FEE = { amount: [{ denom: 'umec', amount: '11000' }], gas: '500000' };
 // Rollup fee: zero amount — the custom fee_checker.go (baseIbcFeesRequired = 10000)
 // only enforces that minimum when minGasPrices is non-zero on the node.
 // This rollup runs with minGasPrices="" so the zero-fee path in fee_checker.go
@@ -43,6 +46,10 @@ const ROLLUP_FEE = {
 };
 const ADDRESS_PREFIX = 'me';
 const CHECKIN_TYPE_URL = '/stchain.rollapp.checkin.MsgCheckIn';
+// Hub chain check-in: MsgNewRecord on the metaearth.wstaking module.
+// This is the ACTIVE check-in system (9 000+ txs/day on me-chain).
+// The rollup chain (mecheckin_101-1) has been stalled since 2026-05-01.
+const WSTAKING_NEW_RECORD_URL = '/metaearth.wstaking.MsgNewRecord';
 const WSTAKING_CLAIM_URL = '/metaearth.wstaking.MsgWithdrawDelegatorReward';
 const WSTAKING_UNSTAKE_URL = '/metaearth.wstaking.MsgUnstake';
 const FETCH_TIMEOUT_MS = 12_000;
@@ -58,6 +65,19 @@ function buildMsgCheckInType(): Type {
   return T;
 }
 const MsgCheckInType = buildMsgCheckInType();
+
+// MsgNewRecord — hub chain active check-in (metaearth.wstaking module).
+// Fields confirmed from proto/metaearth/wstaking/record.proto and live tx inspection.
+function buildMsgNewRecordType(): Type {
+  const root = new Root();
+  const T = new Type('MsgNewRecord')
+    .add(new Field('actionNumber', 1, 'string'))
+    .add(new Field('actionUrl',    2, 'string'))
+    .add(new Field('from',         3, 'string'));
+  root.add(T);
+  return T;
+}
+const MsgNewRecordType = buildMsgNewRecordType();
 
 function buildWstakingWithdrawType(): Type {
   const root = new Root();
@@ -112,6 +132,7 @@ async function buildSigner(wallet: StoredWallet): Promise<OfflineSigner> {
 async function buildHubClient(wallet: StoredWallet): Promise<SigningStargateClient> {
   const signer = await buildSigner(wallet);
   const registry = new Registry([...defaultRegistryTypes]);
+  registry.register(WSTAKING_NEW_RECORD_URL, MsgNewRecordType as any);
   registry.register(WSTAKING_CLAIM_URL, MsgWstakingWithdrawType as any);
   registry.register(WSTAKING_UNSTAKE_URL, MsgWstakingUnstakeType as any);
   return SigningStargateClient.connectWithSigner(HUB_RPC, signer, { registry });
@@ -409,15 +430,54 @@ export async function getAllBalances(address: string, network = 'mainnet'): Prom
 
 // ─── Operations ───────────────────────────────────────────────────────────────
 
+// ─── Hub chain check-in (MsgNewRecord) ───────────────────────────────────────
+// The rollup chain (mecheckin_101-1) has been stalled since 2026-05-01.
+// Active check-in is now MsgNewRecord on me-chain (9 000+ txs active as of June 2026).
+// actionNumber: "MEcheckin" + YYYYMMDD — alphanumeric, unique per day (keeper validates alpha-num only)
+// actionUrl: configurable via CHECKIN_URL env var, defaults to https://metaearth.network
+// Fee: 4 000 umec / 200 000 gas = 0.02 umec/gas (matches chain minGasPrices; gas used ≈75 000)
+
+async function hubCheckin(wallet: StoredWallet): Promise<TxResult> {
+  try {
+    const client = await buildHubClient(wallet);
+    const today = new Date().toISOString().slice(0, 10).replace(/-/g, ''); // "YYYYMMDD"
+    const actionNumber = `MEcheckin${today}`;
+    const actionUrl = process.env.CHECKIN_URL ?? 'https://metaearth.network';
+    const msg = {
+      typeUrl: WSTAKING_NEW_RECORD_URL,
+      value: { actionNumber, actionUrl, from: wallet.address },
+    };
+    const result = await client.signAndBroadcast(wallet.address, [msg], HUB_CHECKIN_FEE, '');
+    if (result.code !== 0) {
+      return { success: false, error: `code ${result.code}: ${(result.rawLog ?? '').slice(0, 200)}` };
+    }
+    return { success: true, txHash: result.transactionHash };
+  } catch (err: any) {
+    return { success: false, error: err?.message ?? String(err) };
+  }
+}
+
 export async function performCheckin(wallet: StoredWallet, network = 'mainnet'): Promise<TxResult> {
-  const msg = {
+  // Primary: hub chain MsgNewRecord — the ACTIVE check-in system as of June 2026.
+  const hubResult = await hubCheckin(wallet);
+  if (hubResult.success) return hubResult;
+
+  // Fallback: rollup chain MsgCheckIn (stalled since 2026-05-01, kept for if/when it resumes).
+  const rollupMsg = {
     typeUrl: CHECKIN_TYPE_URL,
     value: {
       checkInAddress: wallet.address,
       checkInMessage: process.env.CHECK_IN_MESSAGE ?? 'META EARTH! ME, My Way!',
     },
   };
-  return rollupBroadcast(wallet, [msg], '', network);
+  const rollupResult = await rollupBroadcast(wallet, [rollupMsg], '', network);
+  if (rollupResult.success) return rollupResult;
+
+  // Both failed — return hub error as primary (more actionable)
+  return {
+    success: false,
+    error: `Hub: ${hubResult.error} | Rollup: ${rollupResult.error}`,
+  };
 }
 
 export async function hubSend(
