@@ -26,10 +26,10 @@ A daily check-in automation bot for the Meta Earth blockchain, plus all openmeta
 
 ## Architecture decisions
 
-- **Daily check-in is `MsgCheckIn` in the `stchain.rollapp.checkin` module** — type URL `/stchain.rollapp.checkin.MsgCheckIn` on the **rollup chain** (`mecheckin_101-1`) via `broadcastTxAsync`.
+- **Daily check-in is `MsgCheckIn` in the `mechain.checkin` module** — type URL `/mechain.checkin.MsgCheckIn` on the **rollup chain** (`mecheckin_101-1`) via `broadcastTxAsync`. Source: `repos/meta-earth/proto/mechain/checkin/tx.proto`.
 - The rollup chain stopped producing blocks on 2026-05-01, but its **mempool still accepts transactions**. The Meta Earth backend records check-ins from mempool acceptance — `broadcastTxAsync` is sufficient and is exactly what the Meta Earth app does.
 - **Rollup RPC**: `http://118.175.0.247:23011` (chain ID `mecheckin_101-1`, prefix `me`, REST port `23013`).
-- **MsgCheckIn fields** (2): `checkInAddress` (1, wallet address), `checkInMessage` (2, configurable — Meta Earth app uses `"META EARTH! ME, My Way!"`).
+- **MsgCheckIn fields** (3): `checkInAddress` (1, wallet address), `checkInMessage` (2, configurable — Meta Earth app uses `"META EARTH! ME, My Way!"`), `checkInTimezone` (3, timezone string e.g. `"UTC"`, `"UTC+8"`).
 - **Rollup fee**: zero — custom `fee_checker.go` has no minimum fee requirement. Gas limit: `200 000`.
 - **Broadcast mode**: `broadcastTxAsync` — bypasses CheckTx so zero-fee txs are accepted by the mempool. The tx lands in the mempool and the Meta Earth backend sees it.
 - Bot uses `@cosmjs/stargate` + `@cosmjs/proto-signing` + `@cosmjs/tendermint-rpc` directly.
@@ -47,7 +47,7 @@ _Populate as you build — explicit user instructions worth remembering across s
 
 ## Gotchas
 
-- **Rollup `MsgCheckIn` has 2 fields ONLY**: `checkInAddress` (1) and `checkInMessage` (2). The 3rd timezone field is from the hub chain's `mechain.checkin.MsgCheckIn` (a DIFFERENT chain). Adding it to the rollup tx causes a `RecoverInterruption` wireType parse error.
+- **Rollup `MsgCheckIn` type URL is `/mechain.checkin.MsgCheckIn`** with **3 fields**: `checkInAddress` (1), `checkInMessage` (2), `checkInTimezone` (3). Source: `repos/meta-earth/proto/mechain/checkin/tx.proto`. Using the old `/stchain.rollapp.checkin.MsgCheckIn` type URL (2 fields, no timezone) makes transactions appear as "ShowE" (unrecognized module) instead of "Daily Sign-in" in the Meta Earth explorer.
 - **Use `broadcastTxAsync` for rollup txs** — `broadcastTxSync` runs CheckTx which enforces `minGasPrices = "0.001umec"`. Wallets with no IBC MEC fail CheckTx. Async skips CheckTx; DeliverTx has no fee check (confirmed from `openroll/app/fee_checker.go`).
 - **Testnet rollup REST port is `3317`** (not `46660`) — confirmed from `repos/meta-earth-js-sdk/src/config/define.ts`.
 - `meta-earth-js-sdk` is not published on npm — use local clone in `repos/meta-earth-js-sdk/` for reference, or depend on cosmjs directly.

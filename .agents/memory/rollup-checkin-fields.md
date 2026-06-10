@@ -1,20 +1,20 @@
 ---
-name: Rollup MsgCheckIn fields
-description: The rollup chain's MsgCheckIn has 2 fields; the hub chain has 3. They are different chains with different proto schemas.
+name: Rollup MsgCheckIn fields & type URL
+description: The correct type URL and fields for the Daily Sign-in on the rollup chain (mecheckin_101-1).
 ---
 
-There are two completely different chains and two different `MsgCheckIn` types:
+## Rule
+The Daily Sign-in on the rollup chain uses `/mechain.checkin.MsgCheckIn` with **3 fields**:
+1. `checkInAddress` — wallet address
+2. `checkInMessage` — e.g. "META EARTH! ME, My Way!"
+3. `checkInTimezone` — e.g. "UTC", "UTC+8"
 
-1. **Rollup chain** (`mecheckin_101-1`, prefix `me`): `stchain.rollapp.checkin.MsgCheckIn`
-   - Field 1: `checkInAddress` (string)
-   - Field 2: `checkInMessage` (string)
-   - **NO field 3**. Adding any field 3 (e.g., timezone) causes the chain to return `proto: wrong wireType = 2 for field RecoverInterruption: tx parse error`.
+Source: `repos/meta-earth/proto/mechain/checkin/tx.proto` (package `mechain.checkin`)
 
-2. **Hub chain** (separate chain, prefix `gc` or `me-hub`): `mechain.checkin.MsgCheckIn`
-   - Field 1: `checkInAddress` (string)
-   - Field 2: `checkInMessage` (string)
-   - Field 3: `checkInTimezone` (string) — ONLY on the hub chain
+**Why:** Using the old `/stchain.rollapp.checkin.MsgCheckIn` type URL (2 fields, no timezone) causes txs to appear as "ShowE" (unrecognised module) in the Meta Earth explorer — NOT as "Daily Sign-in". The proto for the correct module is in the meta-earth repo (not openroll or me-hub). Previous agent incorrectly documented this as a 2-field rollup-only type.
 
-**Why:** Confirmed from `repos/meta-earth/ts-client/mechain.checkin/types/mechain/checkin/tx.ts` (hub) and live chain error responses (rollup). The `RecoverInterruption` error is a Dymint/rollup internal field at offset 3 in another message type that gets confused when an unexpected length-delimited field appears.
-
-**How to apply:** When building `MsgCheckIn` for the rollup chain, define ONLY 2 proto fields. The hub chain's timezone field must never be copied to the rollup's message builder.
+**How to apply:** Both `meta-earth-checkin/src/checkin.ts` and `artifacts/dashboard/server/blockchain.ts` use:
+- `CHECKIN_TYPE_URL = '/mechain.checkin.MsgCheckIn'`
+- 3-field protobuf type: `checkInAddress(1), checkInMessage(2), checkInTimezone(3)`
+- `checkInTimezone` from `CHECK_IN_TIMEZONE` env var (default `"UTC"`)
+- Broadcast: `broadcastTxAsync` + zero fee (unchanged)

@@ -23,34 +23,39 @@ const ROLLUP_CHAIN_ID: Record<string, string> = {
 };
 const ADDRESS_PREFIX = 'me';
 
-// ── stchain.rollapp.checkin.MsgCheckIn ────────────────────────────────────────
-// Confirmed from successful on-chain tx (netType=rollapp_checkin in explorer URL).
+// ── mechain.checkin.MsgCheckIn ─────────────────────────────────────────────────
+// Source: repos/meta-earth/proto/mechain/checkin/tx.proto
+// Package: mechain.checkin → type URL: /mechain.checkin.MsgCheckIn
 //
-// Fields (2 only — 3rd field is hub chain only, NOT rollup):
-//   checkInAddress (1) — wallet address
-//   checkInMessage (2) — check-in message string
+// Fields (3):
+//   checkInAddress  (1) — wallet address
+//   checkInMessage  (2) — check-in message string
+//   checkInTimezone (3) — timezone string (e.g. "UTC", "UTC+8")
 //
 // Broadcast: broadcastTxAsync — bypasses CheckTx so zero-fee txs enter mempool.
 //   The rollup's fee_checker.go skips fee validation outside CheckTx.
 //   The Meta Earth backend records check-ins from mempool acceptance.
 //
 // Fee: zero (amount: [], gas: 200000)
-const CHECKIN_TYPE_URL = '/stchain.rollapp.checkin.MsgCheckIn';
+const CHECKIN_TYPE_URL = '/mechain.checkin.MsgCheckIn';
 
 // Configurable check-in message — Meta Earth app uses "META EARTH! ME, My Way!"
 const CHECK_IN_MESSAGE = process.env.CHECK_IN_MESSAGE ?? 'META EARTH! ME, My Way!';
+// Configurable timezone — defaults to UTC
+const CHECK_IN_TIMEZONE = process.env.CHECK_IN_TIMEZONE ?? 'UTC';
 
 const CHECKIN_FEE = {
   amount: [] as { denom: string; amount: string }[],
   gas: '200000',
 };
 
-// ── Protobuf type (2 fields — rollup only) ────────────────────────────────────
+// ── Protobuf type (3 fields — from mechain/checkin/tx.proto) ─────────────────
 function buildMsgCheckInType(): Type {
   const root = new Root();
   const T = new Type('MsgCheckIn')
-    .add(new Field('checkInAddress', 1, 'string'))
-    .add(new Field('checkInMessage', 2, 'string'));
+    .add(new Field('checkInAddress',  1, 'string'))
+    .add(new Field('checkInMessage',  2, 'string'))
+    .add(new Field('checkInTimezone', 3, 'string'));
   root.add(T);
   return T;
 }
@@ -91,9 +96,10 @@ export async function performCheckin(
   const chainId = ROLLUP_CHAIN_ID[network] ?? ROLLUP_CHAIN_ID.mainnet;
 
   log(`Starting daily check-in for ${wallet.label} (${wallet.address})`);
-  log(`  module   : stchain.rollapp.checkin.MsgCheckIn`);
+  log(`  module   : mechain.checkin.MsgCheckIn`);
   log(`  rpc      : ${rpc}`);
   log(`  message  : ${CHECK_IN_MESSAGE}`);
+  log(`  timezone : ${CHECK_IN_TIMEZONE}`);
   log(`  fee      : zero (amount: [], gas: 200000)`);
   log(`  broadcast: broadcastTxAsync`);
 
@@ -120,8 +126,9 @@ export async function performCheckin(
     const msg = {
       typeUrl: CHECKIN_TYPE_URL,
       value: MsgCheckInType.fromObject({
-        checkInAddress: wallet.address,
-        checkInMessage: CHECK_IN_MESSAGE,
+        checkInAddress:  wallet.address,
+        checkInMessage:  CHECK_IN_MESSAGE,
+        checkInTimezone: CHECK_IN_TIMEZONE,
       }),
     };
 

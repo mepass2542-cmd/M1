@@ -42,10 +42,11 @@ const ROLLUP_FEE = {
   gas: '200000',
 };
 const ADDRESS_PREFIX = 'me';
-// Confirmed from successful on-chain tx (netType=rollapp_checkin in explorer URL).
-// Only 2 fields — the hub mechain.checkin.MsgCheckIn has 3 fields but the hub binary
-// does not have that module compiled in. The active check-in is on the rollup chain.
-const CHECKIN_TYPE_URL = '/stchain.rollapp.checkin.MsgCheckIn';
+// Source: repos/meta-earth/proto/mechain/checkin/tx.proto
+// Package: mechain.checkin → type URL: /mechain.checkin.MsgCheckIn
+// 3 fields: checkInAddress (1), checkInMessage (2), checkInTimezone (3)
+// Broadcast to rollup chain (mecheckin_101-1) via broadcastTxAsync (zero fee).
+const CHECKIN_TYPE_URL = '/mechain.checkin.MsgCheckIn';
 const WSTAKING_NEW_RECORD_URL = '/metaearth.wstaking.MsgNewRecord';
 const WSTAKING_CLAIM_URL = '/metaearth.wstaking.MsgWithdrawDelegatorReward';
 const WSTAKING_UNSTAKE_URL = '/metaearth.wstaking.MsgUnstake';
@@ -53,14 +54,13 @@ const FETCH_TIMEOUT_MS = 12_000;
 
 // ─── Protobuf type definitions ────────────────────────────────────────────────
 
-// stchain.rollapp.checkin.MsgCheckIn — 2 fields only (rollup chain)
-// Confirmed from successful on-chain tx: netType=rollapp_checkin
-// The hub mechain.checkin.MsgCheckIn has a 3rd checkInTimezone field — do NOT add it here.
+// mechain.checkin.MsgCheckIn — 3 fields (from repos/meta-earth/proto/mechain/checkin/tx.proto)
 function buildMsgCheckInType(): Type {
   const root = new Root();
   const T = new Type('MsgCheckIn')
-    .add(new Field('checkInAddress', 1, 'string'))
-    .add(new Field('checkInMessage', 2, 'string'));
+    .add(new Field('checkInAddress',  1, 'string'))
+    .add(new Field('checkInMessage',  2, 'string'))
+    .add(new Field('checkInTimezone', 3, 'string'));
   root.add(T);
   return T;
 }
@@ -414,20 +414,22 @@ export async function getAllBalances(address: string, network = 'mainnet'): Prom
 
 // ─── Operations ───────────────────────────────────────────────────────────────
 
-// ─── Daily check-in: stchain.rollapp.checkin.MsgCheckIn ──────────────────────
-// Confirmed from successful on-chain tx (netType=rollapp_checkin in explorer URL).
+// ─── Daily check-in: mechain.checkin.MsgCheckIn ──────────────────────────────
+// Source: repos/meta-earth/proto/mechain/checkin/tx.proto
 // Uses rollup chain (mecheckin_101-1) via broadcastTxAsync — bypasses CheckTx so
 // zero-fee txs are accepted. The Meta Earth backend records check-ins from mempool.
 //
-// Fields (2 — rollup only):
-//   checkInAddress — wallet address
-//   checkInMessage — configurable via CHECK_IN_MESSAGE env (app uses "META EARTH! ME, My Way!")
+// Fields (3):
+//   checkInAddress  — wallet address
+//   checkInMessage  — configurable via CHECK_IN_MESSAGE env
+//   checkInTimezone — configurable via CHECK_IN_TIMEZONE env (default "UTC")
 export async function performCheckin(wallet: StoredWallet, network = 'mainnet'): Promise<TxResult> {
   const msg = {
     typeUrl: CHECKIN_TYPE_URL,
     value: MsgCheckInType.fromObject({
-      checkInAddress: wallet.address,
-      checkInMessage: process.env.CHECK_IN_MESSAGE ?? 'META EARTH! ME, My Way!',
+      checkInAddress:  wallet.address,
+      checkInMessage:  process.env.CHECK_IN_MESSAGE  ?? 'META EARTH! ME, My Way!',
+      checkInTimezone: process.env.CHECK_IN_TIMEZONE ?? 'UTC',
     }),
   };
   return rollupBroadcast(wallet, [msg], '', network);
