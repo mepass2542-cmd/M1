@@ -23,30 +23,33 @@ const ROLLUP_CHAIN_ID: Record<string, string> = {
 };
 const ADDRESS_PREFIX = 'me';
 
-// ── mechain.checkin.MsgCheckIn ─────────────────────────────────────────────────
-// Source: repos/meta-earth/proto/mechain/checkin/tx.proto
-// Package: mechain.checkin → type URL: /mechain.checkin.MsgCheckIn
+// ── stchain.rollapp.checkin.MsgCheckIn ────────────────────────────────────────
+// Confirmed from live mempool decode: all real Meta Earth check-in txs use this
+// type URL with exactly 2 fields. No timezone field on the rollup chain.
 //
-// Fields (3):
-//   checkInAddress  (1) — wallet address
-//   checkInMessage  (2) — check-in message string
-//   checkInTimezone (3) — timezone string (e.g. "UTC", "UTC+8")
+// Fields (2):
+//   checkInAddress (1) — wallet address
+//   checkInMessage (2) — check-in message string
 //
-// Broadcast: broadcastTxAsync — bypasses CheckTx so zero-fee txs enter mempool.
-//   The rollup's fee_checker.go skips fee validation outside CheckTx.
-//   The Meta Earth backend records check-ins from mempool acceptance.
+// Fee: IBC MEC denom with amount "0", gas 500000
+//   Real txs include the IBC denom even at zero amount. Empty amount array []
+//   produces a different encoding that shows as "ShowE" instead of "Daily Sign-in".
+//   Gas limit matches real txs: 500000.
 //
-// Fee: zero (amount: [], gas: 200000)
-const CHECKIN_TYPE_URL = '/mechain.checkin.MsgCheckIn';
+// Broadcast: broadcastTxAsync — bypasses CheckTx so txs enter mempool.
+const CHECKIN_TYPE_URL = '/stchain.rollapp.checkin.MsgCheckIn';
+
+// IBC-bridged MEC denom on the rollup (confirmed from real mempool tx)
+const ROLLUP_IBC_DENOM =
+  'ibc/BC7F4D581D88785A22824C8FB6807DFC3B65C1764AFF1230D954AAB06B70CBC5';
 
 // Configurable check-in message — Meta Earth app uses "META EARTH! ME, My Way!"
 const CHECK_IN_MESSAGE = process.env.CHECK_IN_MESSAGE ?? 'META EARTH! ME, My Way!';
-// Configurable timezone — defaults to UTC
-const CHECK_IN_TIMEZONE = process.env.CHECK_IN_TIMEZONE ?? 'UTC';
 
+// Fee matches real check-in txs: IBC denom with amount "0", gas 500000
 const CHECKIN_FEE = {
-  amount: [] as { denom: string; amount: string }[],
-  gas: '200000',
+  amount: [{ denom: ROLLUP_IBC_DENOM, amount: '0' }],
+  gas: '500000',
 };
 
 // ── Protobuf type (3 fields — from mechain/checkin/tx.proto) ─────────────────
