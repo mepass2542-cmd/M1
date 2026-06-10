@@ -48,19 +48,19 @@ const FETCH_TIMEOUT_MS = 12_000;
 
 // ─── Protobuf type definitions ────────────────────────────────────────────────
 
-// Check-in type URL — confirmed from live rollup mempool inspection (2026-06-10).
-// Real bots in the mempool ALL use /stchain.rollapp.checkin.MsgCheckIn with 2 fields.
-// DO NOT use /mechain.checkin.MsgCheckIn (3-field, hub-only) or
-// /metaearth.wstaking.MsgNewRecord (Show E module — completely different task).
-const CHECKIN_TYPE_URL = '/stchain.rollapp.checkin.MsgCheckIn';
+// Check-in type URL — hub chain /mechain.checkin.MsgCheckIn, 3 fields.
+// Confirmed from repos/meta-earth/proto/mechain/checkin/tx.proto and tx.pb.go.
+// MsgCheckIn gets freeGas = true in fee_deduct.go lines 100-101 — zero fee amount.
+// Hub is LIVE (block 13345451+). broadcastTxSync (signAndBroadcast) works fine.
+const CHECKIN_TYPE_URL = '/mechain.checkin.MsgCheckIn';
 
-// 2 fields only — confirmed from decoding real mempool txs on 2026-06-10.
-// NO timezone field. The meta-earth proto has a 3-field version but live txs omit it.
+// 3 fields: check_in_address (1), check_in_message (2), check_in_timezone (3).
 function buildMsgCheckInType(): Type {
   const root = new Root();
   const T = new Type('MsgCheckIn')
-    .add(new Field('checkInAddress', 1, 'string'))
-    .add(new Field('checkInMessage', 2, 'string'));
+    .add(new Field('checkInAddress',  1, 'string'))
+    .add(new Field('checkInMessage',  2, 'string'))
+    .add(new Field('checkInTimezone', 3, 'string'));
   root.add(T);
   return T;
 }
@@ -132,6 +132,7 @@ async function buildSigner(wallet: StoredWallet): Promise<OfflineSigner> {
 async function buildHubClient(wallet: StoredWallet): Promise<SigningStargateClient> {
   const signer = await buildSigner(wallet);
   const registry = new Registry([...defaultRegistryTypes]);
+  registry.register(CHECKIN_TYPE_URL,        MsgCheckInType as any);
   registry.register(WSTAKING_NEW_RECORD_URL, MsgNewRecordType as any);
   registry.register(WSTAKING_CLAIM_URL,      MsgWstakingWithdrawType as any);
   registry.register(WSTAKING_UNSTAKE_URL,    MsgWstakingUnstakeType as any);
@@ -414,21 +415,30 @@ export async function getAllBalances(address: string, network = 'mainnet'): Prom
 
 // ─── Operations ───────────────────────────────────────────────────────────────
 
-// ─── Daily check-in: MsgCheckIn on rollup via broadcastTxAsync ───────────────
-// Type URL and fields confirmed from live rollup mempool inspection (2026-06-10):
-//   ALL real bots use /stchain.rollapp.checkin.MsgCheckIn with 2 fields.
-// The rollup stopped producing blocks 2026-05-01 but its mempool still accepts txs.
-// The Meta Earth backend records check-ins from mempool acceptance.
-// broadcastTxAsync bypasses CheckTx (which enforces fees) — DeliverTx has no fee check.
+// ─── Daily check-in: MsgCheckIn on me-hub via signAndBroadcast ───────────────
+// Type URL: /mechain.checkin.MsgCheckIn — 3 fields (address, message, timezone).
+// Hub is LIVE (block 13345451+). MsgCheckIn gets freeGas in fee_deduct.go L100-101.
+// broadcastTxSync (signAndBroadcast) works fine — no special CheckTx for checkin.
 export async function performCheckin(wallet: StoredWallet, network = 'mainnet'): Promise<TxResult> {
-  const msg = {
-    typeUrl: CHECKIN_TYPE_URL,
-    value: MsgCheckInType.fromObject({
-      checkInAddress: wallet.address,
-      checkInMessage: process.env.CHECK_IN_MESSAGE ?? 'META EARTH! ME, My Way!',
-    }),
-  };
-  return rollupBroadcast(wallet, [msg], '', network);
+  try {
+    const client = await buildHubClient(wallet);
+    const msg = {
+      typeUrl: CHECKIN_TYPE_URL,
+      value: MsgCheckInType.fromObject({
+        checkInAddress:  wallet.address,
+        checkInMessage:  process.env.CHECK_IN_MESSAGE  ?? 'ME, My Way!',
+        checkInTimezone: process.env.CHECK_IN_TIMEZONE ?? 'UTC',
+      }),
+    };
+    const HUB_CHECKIN_FEE = { amount: [] as { denom: string; amount: string }[], gas: '200000' };
+    const result = await client.signAndBroadcast(wallet.address, [msg], HUB_CHECKIN_FEE, '');
+    if (result.code !== 0) {
+      return { success: false, error: `code ${result.code}: ${result.rawLog ?? ''}` };
+    }
+    return { success: true, txHash: result.transactionHash };
+  } catch (err: any) {
+    return { success: false, error: err?.message ?? String(err) };
+  }
 }
 
 export async function hubSend(
