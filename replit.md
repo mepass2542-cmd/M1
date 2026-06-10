@@ -26,17 +26,18 @@ A daily check-in automation bot for the Meta Earth blockchain, plus all openmeta
 
 ## Architecture decisions
 
-- **Daily check-in is `/mechain.checkin.MsgCheckIn`** on the **me-hub** (`me-chain`) via `broadcastTxSync` (`signAndBroadcast`). Hub is LIVE at block 13345451+.
-- **MsgCheckIn fields** (3): `checkInAddress` (1, wallet address), `checkInMessage` (2, e.g. `"ME, My Way!"`), `checkInTimezone` (3, e.g. `"UTC"`). Confirmed from `repos/meta-earth/proto/mechain/checkin/tx.proto` and `tx.pb.go`.
-- **Fee**: zero amount — `fee_deduct.go` lines 100-101 set `freeGas = true` for all `*checkintypes.MsgCheckIn` messages. Gas limit: `200 000`. Normal `broadcastTxSync` works — no custom CheckTx for checkin msgs.
-- **Hub RPC**: `http://118.175.0.247:16657` (chain ID `me-chain`, prefix `me`, REST port `11317`).
+- **Daily check-in is `/stchain.rollapp.checkin.MsgCheckIn`** on the **rollup** chain (`mecheckin_101-1`) via `broadcastTxAsync`. Confirmed live from Meta Earth explorer (block 20275303) and live rollup mempool tx decode (2026-06-10). Hub approach (`/mechain.checkin.MsgCheckIn`) does NOT work — hub binary returns code 2 tx parse error.
+- **MsgCheckIn fields** (2): `checkInAddress` (1, wallet address), `checkInMessage` (2, `"META EARTH! ME, My Way!"`). Confirmed by decoding raw protobuf bytes from live rollup mempool txs.
+- **Fee**: zero amount — rollup's `fee_checker.go` has no DeliverTx minimum. `broadcastTxAsync` bypasses CheckTx entirely. Gas limit: `200 000`.
+- **Rollup RPC**: `http://118.175.0.247:23011` (chain ID `mecheckin_101-1`, prefix `me`, REST port `23013`). Rollup stopped producing blocks ~2026-05-01 but mempool stays up. The Meta Earth backend reads check-ins from mempool acceptance.
+- **Hub RPC**: `http://118.175.0.247:16657` (chain ID `me-chain`, prefix `me`, REST port `11317`). Hub is LIVE at block 13345451+ but has NO working checkin module.
 - Bot uses `@cosmjs/stargate` + `@cosmjs/proto-signing` directly.
 - `protobufjs` overridden to `^7.4.0` in `pnpm-workspace.yaml` — version 6.x blocked by Replit security policy.
-- **Hub `wstaking` module**: Has `MsgNewRecord` — this is the **Show E task** module, **NOT daily check-in**. Using `MsgNewRecord` for check-in triggers "Show E" in the Meta Earth app, not "Daily Sign-in".
+- **Hub `wstaking` module**: Has `MsgNewRecord` — this is the **Show E task** module, **NOT daily check-in**.
 
 ## Product
 
-Daily check-in bot that signs and broadcasts a `MsgCheckIn` transaction on the Meta Earth hub chain (`me-chain`) via `signAndBroadcast` on a configurable cron schedule. Supports multiple wallets via numbered `PRIVATE_KEY_1`, `PRIVATE_KEY_2`, ... or `MNEMONIC_1`, `MNEMONIC_2`, ... secrets.
+Daily check-in bot that signs and broadcasts a `MsgCheckIn` transaction on the Meta Earth rollup chain (`mecheckin_101-1`) via `broadcastTxAsync` on a configurable cron schedule. Supports multiple wallets via numbered `PRIVATE_KEY_1`, `PRIVATE_KEY_2`, ... or `MNEMONIC_1`, `MNEMONIC_2`, ... secrets.
 
 ## User preferences
 
@@ -44,9 +45,10 @@ _Populate as you build — explicit user instructions worth remembering across s
 
 ## Gotchas
 
-- **Correct hub check-in type URL is `/mechain.checkin.MsgCheckIn`** with **3 fields**: `checkInAddress` (1), `checkInMessage` (2), `checkInTimezone` (3). Default message: `"ME, My Way!"`. Confirmed from `repos/meta-earth/proto/mechain/checkin/tx.proto`.
+- **Correct check-in type URL is `/stchain.rollapp.checkin.MsgCheckIn`** on the **rollup** (`mecheckin_101-1`), NOT the hub. Hub check-in type `/mechain.checkin.MsgCheckIn` causes code 2 (tx parse error) — hub binary has no active checkin module.
+- **MsgCheckIn has exactly 2 fields**: `checkInAddress` (field 1) and `checkInMessage` (field 2, `"META EARTH! ME, My Way!"`). No timezone field. Confirmed by decoding live rollup mempool tx raw protobuf bytes.
+- **Use `broadcastTxAsync`** (not `signAndBroadcast`) — the rollup stopped producing blocks so DeliverTx never runs. Async mempool acceptance is what the Meta Earth backend records. Zero-fee txs work because CheckTx is bypassed by async.
 - **DO NOT use `/metaearth.wstaking.MsgNewRecord` for check-in** — that is the "Show E" task module. Sending `MsgNewRecord` triggers "Show E" in the Meta Earth app, not "Daily Sign-in".
-- **MsgCheckIn gets freeGas** — `fee_deduct.go` lines 100-101 set `freeGas = true` for `*checkintypes.MsgCheckIn`. Zero amount fee, gas limit 200 000. Normal `broadcastTxSync` (`signAndBroadcast`) works fine.
 - `meta-earth-js-sdk` is not published on npm — use local clone in `repos/meta-earth-js-sdk/` for reference, or depend on cosmjs directly.
 - `protobufjs@6.x` is blocked by Replit security policy; override to `^7.4.0` is set in `pnpm-workspace.yaml`.
 - The chain at port 26657 on `118.175.0.247` is a separate `gc_20-1` chain (prefix `gc`), NOT the me-hub. The me-hub RPC is at port `16657`.

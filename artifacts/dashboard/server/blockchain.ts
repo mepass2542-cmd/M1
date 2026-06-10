@@ -48,19 +48,19 @@ const FETCH_TIMEOUT_MS = 12_000;
 
 // ─── Protobuf type definitions ────────────────────────────────────────────────
 
-// Check-in type URL — hub chain /mechain.checkin.MsgCheckIn, 3 fields.
-// Confirmed from repos/meta-earth/proto/mechain/checkin/tx.proto and tx.pb.go.
-// MsgCheckIn gets freeGas = true in fee_deduct.go lines 100-101 — zero fee amount.
-// Hub is LIVE (block 13345451+). broadcastTxSync (signAndBroadcast) works fine.
-const CHECKIN_TYPE_URL = '/mechain.checkin.MsgCheckIn';
+// Check-in type URL — ROLLUP chain, 2 fields.
+// Confirmed by decoding live rollup mempool txs (2026-06-10):
+//   /stchain.rollapp.checkin.MsgCheckIn — field 1: address, field 2: message.
+//   broadcastTxAsync bypasses CheckTx; rollup mempool acceptance is what
+//   the Meta Earth backend reads. Verified from explorer block 20275303.
+const CHECKIN_TYPE_URL = '/stchain.rollapp.checkin.MsgCheckIn';
 
-// 3 fields: check_in_address (1), check_in_message (2), check_in_timezone (3).
+// 2 fields only — verified by decoding raw protobuf bytes from live mempool txs.
 function buildMsgCheckInType(): Type {
   const root = new Root();
   const T = new Type('MsgCheckIn')
-    .add(new Field('checkInAddress',  1, 'string'))
-    .add(new Field('checkInMessage',  2, 'string'))
-    .add(new Field('checkInTimezone', 3, 'string'));
+    .add(new Field('checkInAddress', 1, 'string'))
+    .add(new Field('checkInMessage', 2, 'string'));
   root.add(T);
   return T;
 }
@@ -415,30 +415,24 @@ export async function getAllBalances(address: string, network = 'mainnet'): Prom
 
 // ─── Operations ───────────────────────────────────────────────────────────────
 
-// ─── Daily check-in: MsgCheckIn on me-hub via signAndBroadcast ───────────────
-// Type URL: /mechain.checkin.MsgCheckIn — 3 fields (address, message, timezone).
-// Hub is LIVE (block 13345451+). MsgCheckIn gets freeGas in fee_deduct.go L100-101.
-// broadcastTxSync (signAndBroadcast) works fine — no special CheckTx for checkin.
+// ─── Daily check-in: MsgCheckIn on ROLLUP via broadcastTxAsync ───────────────
+// Confirmed from live rollup mempool + explorer log (block 20275303, 2026-06-10):
+//   type: stchain.rollapp.checkin.MsgCheckIn, 2 fields: address + message.
+//   broadcastTxAsync bypasses CheckTx — mempool acceptance is what the Meta
+//   Earth backend reads (rollup stopped producing blocks 2026-05-01).
 export async function performCheckin(wallet: StoredWallet, network = 'mainnet'): Promise<TxResult> {
-  try {
-    const client = await buildHubClient(wallet);
+  return rollupBroadcast(wallet, network, async (client, tmClient, chainId) => {
+    const address = wallet.address;
+    const message = process.env.CHECK_IN_MESSAGE ?? 'META EARTH! ME, My Way!';
     const msg = {
       typeUrl: CHECKIN_TYPE_URL,
       value: MsgCheckInType.fromObject({
-        checkInAddress:  wallet.address,
-        checkInMessage:  process.env.CHECK_IN_MESSAGE  ?? 'ME, My Way!',
-        checkInTimezone: process.env.CHECK_IN_TIMEZONE ?? 'UTC',
+        checkInAddress: address,
+        checkInMessage: message,
       }),
     };
-    const HUB_CHECKIN_FEE = { amount: [] as { denom: string; amount: string }[], gas: '200000' };
-    const result = await client.signAndBroadcast(wallet.address, [msg], HUB_CHECKIN_FEE, '');
-    if (result.code !== 0) {
-      return { success: false, error: `code ${result.code}: ${result.rawLog ?? ''}` };
-    }
-    return { success: true, txHash: result.transactionHash };
-  } catch (err: any) {
-    return { success: false, error: err?.message ?? String(err) };
-  }
+    return { msgs: [msg], memo: '' };
+  });
 }
 
 export async function hubSend(

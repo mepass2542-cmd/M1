@@ -1,3 +1,5 @@
-- [Hub MsgCheckIn — correct type & fields](hub-checkin-fields.md) — use /mechain.checkin.MsgCheckIn (3 fields incl. timezone) on me-hub via signAndBroadcast; freeGas confirmed from fee_deduct.go L100-101.
+- [Rollup MsgCheckIn — correct type & fields](rollup-checkin-fields.md) — use /stchain.rollapp.checkin.MsgCheckIn (2 fields, no timezone) on rollup via broadcastTxAsync; confirmed live 2026-06-10.
+- [Rollup broadcastTxAsync — bypasses CheckTx](rollup-checkin-broadcast.md) — zero-fee + async bypasses CheckTx fee enforcement; rollup stalled but mempool acceptance is sufficient for Meta Earth backend.
 - [MsgNewRecord = Show E, NOT check-in](hub-checkin-msgnewrecord.md) — /metaearth.wstaking.MsgNewRecord on hub triggers "Show E" in the Meta Earth app; never use for daily check-in.
 - [Replit api-server artifact routing](replit-api-server-proxy.md) — Replit auto-creates an api-server on port 8080 that intercepts /api/* browser requests; must proxy it to the real server.
+- [Hub checkin module NOT active](hub-checkin-dead.md) — /mechain.checkin.MsgCheckIn on me-hub returns code 2 tx parse error; hub binary has no active checkin module despite source code existing. Always use rollup.
